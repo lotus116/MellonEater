@@ -6,6 +6,29 @@ import base64
 from .core import DATA
 
 
+def pdf_fonts():
+    """Embed local Chinese faces; never distribute operating-system font files."""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    candidates={
+        'body': [('SongtiSC','/System/Library/Fonts/Supplemental/Songti.ttc',6)],
+        'heading': [('HeitiSCMedium','/System/Library/Fonts/STHeiti Medium.ttc',1)],
+        'ui': [('HeitiSCLight','/System/Library/Fonts/STHeiti Light.ttc',1)],
+        'quote': [('SongtiSCBold','/System/Library/Fonts/Supplemental/Songti.ttc',1)],
+    }
+    fallback=[('ArialUnicode','/Library/Fonts/Arial Unicode.ttf',0),
+              ('ArialUnicode','/System/Library/Fonts/Supplemental/Arial Unicode.ttf',0)]
+    result={}
+    for role,faces in candidates.items():
+        for name,path,index in faces+fallback:
+            if not Path(path).is_file():continue
+            if name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(name,path,subfontIndex=index))
+            result[role]=name;break
+        else:raise ValueError('缺少可嵌入的中文字体，请在 Mac 安装宋体或 Arial Unicode。')
+    return result
+
+
 def local_time(value):
     from datetime import datetime, timedelta, timezone
     try:return datetime.fromisoformat(value).astimezone(timezone(timedelta(hours=8))).strftime('%Y年%m月%d日 %H:%M')
@@ -69,15 +92,24 @@ def reader_html(case,run):
       '<title>'+escape(r['title'])+'</title><style>body{margin:0;color:#213047;background:#f2f4f8;font:17px/1.9 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}main{max-width:760px;margin:24px auto;padding:48px;background:white}h1{font-size:32px;line-height:1.5}h2{font-size:23px;margin-top:36px}small,figcaption{font-size:13px;color:#5a687b}blockquote{border-left:3px solid #4350ae;padding-left:20px;color:#4350ae}figure{margin:24px 0;text-align:center}img{max-width:100%;max-height:720px}li{margin-bottom:8px}@media(max-width:640px){main{padding:24px;margin:0}}@media print{main{margin:0;padding:0}body{background:white}figure{break-inside:avoid}}</style><main><small>知瓜 · 私密材料阅读版</small>',
       '<h1>'+escape(r['title'])+'</h1>',p(r['deck']),p(r['lead']),'<h2>先认一下人</h2>']
     for person in r['people']:parts.append(p(person['name']+'：'+person['role']))
+    if r.get('story'):
+        story=r['story'];parts.extend(['<h2>事情是怎样走到这一步的</h2>',p(story['central_question'])])
+        for i,step in enumerate(story['arc'],1):
+            parts.extend(['<h3>'+str(i)+' · '+escape(step['stage'])+'</h3>',p(step['happened']),
+                p('变化：'+step['changed']),'<small>'+escape(step['order_basis'])+'</small>',refs(step['source_ids'])])
+        parts.append('<small>'+escape(story['timeline_note'])+'</small>')
     for ch in r['chapters']:
         parts.append('<h2>'+escape(ch['title'])+'</h2>')
         for para in ch['paragraphs']:parts.extend([p(para['text']),refs(para['source_ids'])])
         if ch['quote_text']:parts.append('<blockquote>'+escape(ch['quote_text'])+p('—— '+ch['quote_speaker'])+'</blockquote>')
         if ch['image_id']:
             parts.append('<figure><img src="'+image_uri(lookup[ch['image_id']]['image'])+'" alt="'+escape(ch['image_caption'])+'"><figcaption>'+escape(ch['image_caption'])+' ['+escape(ch['image_id'])+']</figcaption></figure>')
+    if r.get('story',{}).get('threads'):
+        parts.append('<h2>把支线放回主线</h2>')
+        for thread in r['story']['threads']:parts.extend([p(thread['name']+'：'+thread['role_in_story']),refs(thread['source_ids'])])
     parts.extend(['<h2>'+escape(r['verdict_title'])+'</h2>',p(r['verdict']),refs(r['verdict_source_ids']),'<h2>还有哪些地方没说清</h2><ul>'])
     parts.extend('<li>'+escape(q)+'</li>' for q in r['open_questions'])
-    parts.extend(['</ul><hr>',p(case.get('source_note','')),'<small>整理时间：'+escape(local_time(run['created_at']))+'（香港时间）。材料编号可在本地工作台回查。</small></main></html>'])
+    parts.extend(['</ul><hr>',p(case.get('source_note','')),'<small>整理时间：'+escape(local_time(run.get('reader_updated_at',run['created_at'])))+'（香港时间）。材料编号可在本地工作台回查。</small></main></html>'])
     return ''.join(parts)
 
 
@@ -88,16 +120,13 @@ def audit_pdf(case, run, path: Path):
     from reportlab.lib import colors
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, KeepTogether
     from reportlab.lib.enums import TA_LEFT
-    font_path=Path('/Library/Fonts/Arial Unicode.ttf')
-    if not font_path.exists():
-        font_path=Path('/System/Library/Fonts/STHeiti Light.ttc')
-    pdfmetrics.registerFont(TTFont('ChiguaChinese',str(font_path),subfontIndex=0))
+    fonts=pdf_fonts()
     styles = getSampleStyleSheet()
-    base = {'fontName':'ChiguaChinese', 'leading':18, 'wordWrap':'CJK', 'spaceAfter':9}
+    base = {'fontName':fonts['body'], 'leading':18, 'wordWrap':'CJK', 'spaceAfter':9}
     body = ParagraphStyle('Chinese', fontSize=10.5, **base)
     small = ParagraphStyle('SmallChinese', fontSize=9, textColor=colors.HexColor('#566477'), **base)
-    heading = ParagraphStyle('HeadingChinese', fontName='ChiguaChinese', fontSize=15, leading=22, spaceBefore=18, spaceAfter=12, keepWithNext=True)
-    title = ParagraphStyle('TitleChinese', fontName='ChiguaChinese', fontSize=25, leading=34, spaceAfter=18)
+    heading = ParagraphStyle('HeadingChinese', fontName=fonts['heading'], fontSize=15, leading=22, spaceBefore=18, spaceAfter=12, keepWithNext=True)
+    title = ParagraphStyle('TitleChinese', fontName=fonts['heading'], fontSize=25, leading=34, spaceAfter=18)
     story=[]
     def p(text, style=body):
         return Paragraph(escape(str(text)).replace('\n','<br/>'),style)
@@ -130,7 +159,7 @@ def audit_pdf(case, run, path: Path):
                 img.drawWidth=img.imageWidth*factor; img.drawHeight=img.imageHeight*factor
                 story.append(img)
     def footer(canvas,doc):
-        canvas.setFont('ChiguaChinese',8)
+        canvas.setFont(fonts['ui'],8)
         canvas.setFillColor(colors.HexColor('#566477'))
         canvas.drawString(45,25,'知瓜 · 私密案例 / '+case['title'])
         canvas.drawRightString(550,25,str(doc.page))
@@ -150,27 +179,30 @@ def reader_pdf(case,run,path):
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, KeepTogether, HRFlowable
-    font_path=Path('/Library/Fonts/Arial Unicode.ttf')
-    if not font_path.exists():font_path=Path('/System/Library/Fonts/STHeiti Light.ttc')
-    pdfmetrics.registerFont(TTFont('ChiguaChinese',str(font_path),subfontIndex=0))
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, KeepTogether, HRFlowable, PageBreak
+    fonts=pdf_fonts()
     ink=colors.HexColor('#213047');muted=colors.HexColor('#5a687b');accent=colors.HexColor('#4350ae')
     def style(name,size,leading,**kw):
-        return ParagraphStyle(name,fontName='ChiguaChinese',fontSize=size,leading=leading,
+        return ParagraphStyle(name,fontName=fonts['body'],fontSize=size,leading=leading,
                               wordWrap='CJK',textColor=ink,spaceAfter=10,**kw)
-    body=style('ReaderBody',11.2,21)
+    body=style('ReaderBody',11.7,21)
     title=style('ReaderTitle',25,36,spaceBefore=8)
     deck=style('ReaderDeck',13,23)
     heading=style('ReaderHeading',17,26,spaceBefore=18,keepWithNext=True)
     small=style('ReaderSmall',8.5,14);small.textColor=muted
     quote=style('ReaderQuote',13,23,leftIndent=14,rightIndent=14);quote.textColor=accent
+    for s in [title,heading]:s.fontName=fonts['heading']
+    for s in [deck,small]:s.fontName=fonts['ui']
+    quote.fontName=fonts['quote']
     def p(text,s=body):return Paragraph(escape(str(text)).replace('\n','<br/>'),s)
     r=run['report']['reader'];lookup={m['id']:m for m in case['messages']}
     title_text=r['title']
     if len(title_text)>=19 and '：' in title_text:title_text=title_text.replace('：','：\n',1)
     story=[p('知瓜 · 一起把前因后果看明白',small),p(title_text,title),p(r['deck'],deck),
            HRFlowable(width='100%',thickness=.8,color=colors.HexColor('#cfd6e4'),spaceBefore=8,spaceAfter=18),p(r['lead'])]
-    if r['people']:
+    if r.get('story') and r['people']:
+        story.append(p('人物：'+'；'.join(person['name']+'——'+person['role'] for person in r['people']),small))
+    elif r['people']:
         story.append(p('先认一下人',heading))
         rows=[[p(person['name'],small),p(person['role'],small)] for person in r['people']]
         table=Table(rows,colWidths=[85,410],hAlign='LEFT')
@@ -178,6 +210,21 @@ def reader_pdf(case,run,path):
             ('VALIGN',(0,0),(-1,-1),'TOP'),('LEFTPADDING',(0,0),(-1,-1),12),('RIGHTPADDING',(0,0),(-1,-1),12),
             ('TOPPADDING',(0,0),(-1,-1),9),('BOTTOMPADDING',(0,0),(-1,-1),2)]))
         story.append(table)
+    if r.get('story'):
+        spine=r['story']
+        story.extend([p('事情是怎样走到这一步的',heading),p(spine['central_question'])])
+        arc_label=ParagraphStyle('ArcLabel',parent=small,fontName=fonts['heading'],fontSize=10.5,leading=17)
+        arc_body=ParagraphStyle('ArcBody',parent=body,fontSize=10.8,leading=18,spaceAfter=5)
+        rows=[]
+        for index,step in enumerate(spine['arc'],1):
+            rows.append([[p(str(index)+' / '+step['stage'],arc_label),p(step['order_basis'],small)],
+                         [p(step['happened'],arc_body),p('变化：'+step['changed'],small)]])
+        table=Table(rows,colWidths=[116,379],hAlign='LEFT')
+        table.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'TOP'),
+            ('LINEBELOW',(0,0),(-1,-2),.5,colors.HexColor('#dfe4ed')),
+            ('LEFTPADDING',(0,0),(-1,-1),7),('RIGHTPADDING',(0,0),(-1,-1),9),
+            ('TOPPADDING',(0,0),(-1,-1),8),('BOTTOMPADDING',(0,0),(-1,-1),4)]))
+        story.extend([table,Spacer(1,8),p(spine['timeline_note'],small),PageBreak()])
     for chapter in r['chapters']:
         story.append(p(chapter['title'],heading))
         refs=[]
@@ -192,6 +239,10 @@ def reader_pdf(case,run,path):
             img.drawWidth=img.imageWidth*factor;img.drawHeight=img.imageHeight*factor;img.hAlign='CENTER'
             story.append(KeepTogether([Spacer(1,8),img,Spacer(1,7),p(chapter['image_caption']+' ['+image_id+']',small)]))
         if refs:story.append(p('本段材料：'+', '.join(dict.fromkeys(refs)),small))
+    if r.get('story',{}).get('threads'):
+        story.append(p('把支线放回主线',heading))
+        for thread in r['story']['threads']:
+            story.extend([p(thread['name']+'：'+thread['role_in_story']),p('材料：'+', '.join(thread['source_ids']),small)])
     story.extend([p(r['verdict_title'],heading),p(r['verdict']),p('判断依据：'+', '.join(r['verdict_source_ids']),small)])
     if r['open_questions']:
         story.append(p('还有哪些地方没说清',heading))
@@ -199,9 +250,9 @@ def reader_pdf(case,run,path):
     story.extend([Spacer(1,14),HRFlowable(width='100%',thickness=.5,color=colors.HexColor('#d5dce6'),spaceAfter=12),
         p('关于这份整理',small),p(case.get('source_note',''),small),
         p('这是对现有材料的还原与评价，不是对记录外全部事实的认证。文中编号可在本地工作台回查原文；完整证据清单和运行信息保留在工作台。',small),
-        p('整理时间：'+local_time(run['created_at'])+'（香港时间）',small)])
+        p('整理时间：'+local_time(run.get('reader_updated_at',run['created_at']))+'（香港时间）',small)])
     def footer(canvas,doc):
-        canvas.setFont('ChiguaChinese',8);canvas.setFillColor(muted)
+        canvas.setFont(fonts['ui'],8);canvas.setFillColor(muted)
         canvas.drawString(50,25,'知瓜 / 私密材料阅读版');canvas.drawRightString(545,25,str(doc.page))
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
     SimpleDocTemplate(str(path),pagesize=(595.28,841.89),leftMargin=50,rightMargin=50,topMargin=42,bottomMargin=45,

@@ -90,6 +90,7 @@ def normalize_messages(rows):
             'source_kind': row.get('source_kind', '用户提供文字'),
             'unit': row.get('unit', '消息'), 'image': row.get('image'),
             'ocr_lines': row.get('ocr_lines', []), 'uncertainty': row.get('uncertainty', ''),
+            'source_reference': row.get('source_reference'),
         })
         if len(result) > 2000:
             raise ValueError('本版每包最多 2000 条消息，请按事件或时间范围分包。')
@@ -146,12 +147,26 @@ READER_SCHEMA = schema_obj({'title': STR, 'deck': STR, 'lead': STR,
     'people': {'type': 'array', 'items': schema_obj({'name': STR, 'role': STR, 'source_ids': STRS})},
     'chapters': {'type': 'array', 'items': READER_CHAPTER},
     'verdict_title': STR, 'verdict': STR, 'verdict_source_ids': STRS, 'open_questions': STRS})
+LEGACY_READER_SCHEMA = READER_SCHEMA
+STORY_SCHEMA = schema_obj({
+    'central_question': STR,
+    'arc': {'type':'array','items':schema_obj({'stage':STR,'happened':STR,'changed':STR,
+        'order_basis':{'type':'string','enum':['时间戳可确认','相对顺序可确认','当事人回述','先后未确认']},'source_ids':STRS})},
+    'threads': {'type':'array','items':schema_obj({'name':STR,'role_in_story':STR,'source_ids':STRS})},
+    'timeline_note':STR,
+})
+READER_SCHEMA = schema_obj({**READER_SCHEMA['properties'],'story':STORY_SCHEMA})
 PUBLISHED_SCHEMA = schema_obj({**REPORT_SCHEMA['properties'], 'reader': READER_SCHEMA})
 READER_RULES = '''同时输出 reader，供人类顺着阅读的吃瓜报告：
-标题准确而有吸引力，不煽动、不把猜测写成反转事实。deck 一句话说明核心矛盾，lead 用约100字交代事情。
-people 用角色称呼和一句话说明关系，正文不暴露无必要的真实姓名。
-chapters 3至5章，每章2至3个短段落，按起因、升级、关键材料、最新状态推进；全文约1200至1800中文字。
-把重要截图（如存在）穿插在相关章节，image_id 只能选择确实带 image 字段的材料编号，优先2至3张最关键且不同的截图；没有图片就留空。
+先还原外部事件的主线，不要按聊天截图顺序逐段解释，也不要把每个争点写成独立故事。
+标题应概括冲突如何发展，不用“几张截图说明了什么”作为主角。deck 点出从哪种分歧变成哪种冲突；lead 约100字交代人物、起因、关键转折、当前结果。
+story.central_question 用一句话说明推动故事的问题。story.arc 用4至5个阶段还原起因、升级、转折、收场：每项 happened 不超过60中文字，是实际发生或当事人回述的事件；changed 不超过30字，解释它改变了什么，不要只写“谁发了一条消息”。
+arc 必须逐项标 order_basis。只在有时间戳或可靠上下文时确定先后；“材料提交顺序”不是发生顺序，“多条指控同时出现”不是因果。timeline_note 集中说明不能串成全局时间线的部分。不要为讲顺故事虚构动机、衔接或日期。
+story.threads 用2条支线解释贡献、尊重等争点如何被带入主线、起了什么作用，每项不超过80字，不能仅罗列支持/反证。主线与支线应让读者理解事件结构，而非一张主张审计表。
+people 最多3项角色，role 每项不超过16字，不保留真实姓名。标题尽量18字以内；lead 不超过110字；timeline_note 不超过120字，其他材料限制放在 open_questions 或来源说明。
+chapters 2至3章，每章2个短段落，总正文约600至850中文字。重点讲主线图未充分展开的关键转折、升级机制、结局；不要再次逐项复述时间线。每章不是一个证据争点的裁判意见。行文把事件放在主语位置，不反复用“截图显示”“材料支持”“现有证据不足”开头，不在正文堆 IMG/M 编号。
+不确定性要保留，但集中说明共同限制，避免每句话都用免责声明打断。推断必须表明是归纳，不能把推测写成事实。
+最多选择1张真正改变主线判断的截图，image_id 只能用确实带 image 字段的编号；其他原图在工作台回查，没有必要的图片就留空。
 每段关联支持它的 source_ids。精选原话必须逐字来自原材料；quote_text、quote_speaker、quote_source_id 没有时都留空。
 不要堆叠“主张/支持/反证/标准”的审计表；在自然叙述中说明谁声称什么、截图显示什么、哪些还不知道。
 verdict 以明确且有证据的判断收束，可以不对称，但要说明依据。不要用“双方都有错”代替具体评价。
@@ -212,10 +227,16 @@ def validate_report(report, messages):
 
 
 def validate_reader(reader,messages):
-    validate_schema(reader,READER_SCHEMA)
+    validate_schema(reader,READER_SCHEMA if 'story' in reader else LEGACY_READER_SCHEMA)
     if not reader['chapters'] or not reader['lead'].strip():raise ValueError('阅读版缺少正文。')
     lookup={m['id']:m for m in messages}
     refs=list(reader['verdict_source_ids'])
+    if 'story' in reader:
+        story=reader['story']
+        if not story['central_question'].strip() or not story['arc']:raise ValueError('阅读版缺少事件主线。')
+        for item in story['arc']+story['threads']:
+            if not item['source_ids']:raise ValueError('主线或支线缺少来源。')
+            refs.extend(item['source_ids'])
     for person in reader['people']:refs.extend(person['source_ids'])
     for chapter in reader['chapters']:
         for para in chapter['paragraphs']:refs.extend(para['source_ids'])

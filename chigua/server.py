@@ -29,7 +29,12 @@ def get_run(rid):
     rid=safe_id(rid)
     result=json.loads((DATA/'runs'/rid/'result.json').read_text(encoding='utf-8'))
     reader=DATA/'runs'/rid/'reader.json'
-    if reader.exists():result['report']['reader']=json.loads(reader.read_text(encoding='utf-8'))['reader']
+    if reader.exists():
+        edition=json.loads(reader.read_text(encoding='utf-8'))
+        result['report']['reader']=edition['reader']
+        result['reader_updated_at']=edition.get('edited_at',edition.get('created_at',result['created_at']))
+        result['reader_trace']=edition.get('trace')
+        result['reader_editorial_review']=edition.get('editorial_review')
     return result
 
 

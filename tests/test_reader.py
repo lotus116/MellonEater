@@ -14,6 +14,12 @@ def reader():
       'verdict_title':'判断','verdict':'仍需核对。','verdict_source_ids':['M1'],'open_questions':['凭证在哪？']}
 
 
+def story():
+    return {'central_question':'款项是否已支付？','arc':[{'stage':'提出争议','happened':'甲说付过款。',
+        'changed':'双方需要核对凭证。','order_basis':'当事人回述','source_ids':['M1']}],
+        'threads':[],'timeline_note':'只有单方叙述，没有完整时间线。'}
+
+
 class ReaderTests(unittest.TestCase):
     def setUp(self):self.messages=normalize_messages([{'id':'M1','text':'我付了钱','speaker':'甲'}])
     def test_fabricated_quote_rejected(self):
@@ -22,6 +28,15 @@ class ReaderTests(unittest.TestCase):
     def test_fake_image_rejected(self):
         r=reader();r['chapters'][0]['image_id']='M1'
         with self.assertRaisesRegex(ValueError,'图片'):validate_reader(r,self.messages)
+    def test_story_requires_sources(self):
+        r=reader();r['story']=story();r['story']['arc'][0]['source_ids']=[]
+        with self.assertRaisesRegex(ValueError,'缺少来源'):validate_reader(r,self.messages)
+    def test_story_does_not_allow_invented_source(self):
+        r=reader();r['story']=story();r['story']['arc'][0]['source_ids']=['absent']
+        with self.assertRaisesRegex(ValueError,'不存在'):validate_reader(r,self.messages)
+    def test_story_order_basis_is_explicit(self):
+        r=reader();r['story']=story();r['story']['arc'][0]['order_basis']='模型猜测为确定事实'
+        with self.assertRaisesRegex(ValueError,'选项'):validate_reader(r,self.messages)
     def test_standalone_html_embeds_image_and_escapes(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);(root/'uploads').mkdir();(root/'uploads'/'sample.png').write_bytes(b'png-content')

@@ -87,6 +87,10 @@ def list_runs(cid):
         if row['case_id'] == cid:
             reader_path=p.parent/'reader.json'
             if reader_path.exists():
-                row['report']['reader']=json.loads(reader_path.read_text(encoding='utf-8'))['reader']
+                edition=json.loads(reader_path.read_text(encoding='utf-8'))
+                row['report']['reader']=edition['reader']
+                row['reader_updated_at']=edition.get('edited_at',edition.get('created_at',row['created_at']))
+                row['reader_trace']=edition.get('trace')
+                row['reader_editorial_review']=edition.get('editorial_review')
             result.append(row)
     return sorted(result, key=lambda r:r['created_at'], reverse=True)

@@ -19,8 +19,9 @@ class PipelineTests(unittest.TestCase):
         pipeline.JOBS.clear();self.patch.stop();self.tmp.cleanup()
     def test_four_stages_keep_original_input(self):
         stats={'provider':'test','model':'test','seconds':0,'usage':None,'cost':None}
-        from test_reader import reader
-        report=valid_report();report['reader']=json.loads(json.dumps(reader(),ensure_ascii=False).replace('M1','M0001').replace('我付了钱','他没有给我钱'))
+        from test_reader import reader,story
+        r=reader();r['story']=story()
+        report=valid_report();report['reader']=json.loads(json.dumps(r,ensure_ascii=False).replace('M1','M0001').replace('我付了钱','他没有给我钱'))
         with patch.object(pipeline.provider,'generate',return_value=(report,stats)) as gen:
             pipeline.run_pipeline('test',self.case,'B2')
         self.assertEqual([c.args[3] for c in gen.call_args_list],['discover','evidence','assess','review'])
@@ -34,8 +35,9 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue((self.root/'runs/test/failure.json').exists())
         self.assertFalse((self.root/'runs/test/result.json').exists())
     def test_invalid_citations_do_not_become_success(self):
-        from test_reader import reader
-        report=valid_report();report['reader']=json.loads(json.dumps(reader(),ensure_ascii=False).replace('M1','M0001').replace('我付了钱','他没有给我钱'));report['claims'][0]['support_ids']=['missing']
+        from test_reader import reader,story
+        r=reader();r['story']=story()
+        report=valid_report();report['reader']=json.loads(json.dumps(r,ensure_ascii=False).replace('M1','M0001').replace('我付了钱','他没有给我钱'));report['claims'][0]['support_ids']=['missing']
         with patch.object(pipeline.provider,'generate',return_value=(report,{})):
             pipeline.run_pipeline('test',self.case,'B1')
         self.assertEqual(pipeline.JOBS['test']['status'],'failed')
