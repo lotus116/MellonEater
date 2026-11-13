@@ -1,0 +1,16 @@
+__pycache__/
+.venv/
+.env
+.env.*
+!.env.example
+data/cases/
+data/runs/
+data/uploads/
+data/private/
+output/
+tmp/
+.DS_Store
+*.log
+*.egg-info/
+build/
+dist/

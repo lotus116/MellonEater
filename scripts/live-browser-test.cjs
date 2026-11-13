@@ -1,0 +1,28 @@
+const {chromium}=require(require('node:os').homedir()+'/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const fs=require('node:fs');
+(async()=>{
+fs.mkdirSync('tmp',{recursive:true});fs.mkdirSync('output',{recursive:true});
+const browser=await chromium.launch({headless:true,executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+const page=await browser.newPage({baseURL:'http://127.0.0.1:8765',viewport:{width:1440,height:1000}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
+await page.setContent('<main style="font:26px/2 sans-serif;padding:30px;background:white;color:#213047">合成测试记录（不含真人信息）<br>甲：预算是 600 元，超出先问我。<br>乙：我付了 560 元，稍后提供收据。<br>甲：收到收据后我会核对报销。</main>');await page.locator('main').screenshot({path:'tmp/synthetic-chat.png'});
+await page.goto('http://127.0.0.1:8765');await page.locator('.case-item').first().waitFor();
+await page.locator('#new-case').click();await page.locator('#import-title').fill('全流程验收 / 合成截图');
+await page.locator('#import-files').setInputFiles('tmp/synthetic-chat.png');
+await page.waitForFunction(()=>document.querySelector('#upload-list').textContent.includes('识别'));
+await page.locator('#save-case').click();await page.getByRole('heading',{name:'全流程验收 / 合成截图',exact:true}).waitFor();
+await page.locator('.material').first().waitFor();
+if(await page.locator('.material').count()!==1)throw Error('Image import failed');
+await page.locator('details').filter({has:page.locator('#method')}).locator('summary').click();await page.locator('#method').selectOption('B1');await page.locator('#analyze').click();
+await page.waitForFunction(()=>document.querySelector('#analyze').disabled);
+console.log('Live model started through browser; checking refresh recovery');
+await page.reload();await page.waitForFunction(()=>document.querySelector('#feedback').textContent.includes('分析'));
+await page.waitForFunction(()=>document.querySelector('#feedback').textContent.includes('报告已生成')||document.querySelector('#feedback').classList.contains('error'),null,{timeout:600000});
+if(await page.locator('#feedback').evaluate(e=>e.classList.contains('error')))throw Error(await page.locator('#feedback').innerText());
+await page.locator('.reader-title').waitFor();await page.locator('[data-ref]').first().click();await page.locator('.evidence-card img').waitFor();
+const cid=new URL(page.url()).searchParams.get('case');const obj=await(await page.request.get('/api/cases/'+cid)).json();const rid=obj.runs[0].id;if(!obj.case.messages[0].ocr_lines.length)throw Error('Local OCR returned no lines');
+const response=await page.request.get('/report/'+rid+'/pdf');if(!response.ok())throw Error('PDF export failed');const pdf=await response.body();if(pdf.subarray(0,4).toString()!=='%PDF')throw Error('Not PDF');
+fs.writeFileSync('output/全流程验收_合成案例.pdf',pdf);const html=await(await page.request.get('/report/'+rid+'/html')).text();if(!html.includes('data:image/'))console.log('No selected image in reader edition; original kept in evidence');
+if(errors.length)throw Error(errors.join('\n'));
+fs.writeFileSync('tmp/live-flow-result.json',JSON.stringify({case_id:cid,run_id:rid,status:'passed',ocr_lines:obj.case.messages[0].ocr_lines.length,checks:['browser upload','local OCR','case save','live Codex','reload recovery','reader rendering','original image lookup','PDF export','HTML export'],errors},null,2));
+console.log('PASS live end-to-end',rid);await browser.close();
+})().catch(e=>{console.error(e);process.exit(1)});

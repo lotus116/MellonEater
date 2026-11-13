@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>知瓜 · 事件与证据工作台</title><link rel="stylesheet" href="/style.css"></head>
+<body><a class="skip" href="#main">跳到报告内容</a>
+<div class="shell"><aside class="sidebar"><a class="brand" href="/" aria-label="知瓜首页"><span class="brand-mark" aria-hidden="true">瓜</span><span>知瓜<small>把前因后果讲清楚</small></span></a>
+<button class="primary wide" id="new-case">＋ 导入聊天记录</button><div class="side-label">我的案例</div><nav id="case-list" aria-label="案例列表"></nav>
+<div class="side-bottom"><div class="local-dot">材料保存在本机</div><button class="plain wide" id="open-settings">模型与接入设置</button><span class="version">Mac demo / 0.1</span></div></aside>
+<main id="main" tabindex="-1"><header class="topbar"><span id="case-breadcrumb">事件与证据工作台</span><span class="model-pill" id="model-status">正在连接</span></header>
+<section class="case-header"><div><p class="eyebrow">读懂经过，也看清依据</p><h1 id="case-title">打开一个案例</h1><p id="case-meta" class="muted">从左侧导入聊天记录，或查看已有案例。</p></div><div class="header-actions"><button id="analyze" class="primary">生成分析报告</button><button id="export-pdf" class="secondary" disabled>导出 PDF</button></div></section>
+<div id="feedback" role="status" aria-live="polite" class="feedback hidden"></div>
+<details class="analysis-options"><summary>分析方式与提问身份</summary><div class="option-row"><label>分析方式<select id="method"><option value="B2">证据工作流（四阶段）</option><option value="B1">详细提示（单次）</option><option value="B0">普通提示（单次）</option><option value="A1">自由笔记（四阶段对照）</option></select></label><label>提交者身份<input id="identity" value="旁观者" maxlength="200"></label><p class="muted">仅发送当前案例给所选模型。不同运行会分别保存。</p></div></details>
+<div class="workspace"><section class="reading"><nav class="tabs" aria-label="内容视图"><button class="tab active" data-tab="report" aria-selected="true">事件报告</button><button class="tab" data-tab="claims" aria-selected="false">证据清单</button><button class="tab" data-tab="materials" aria-selected="false">全部材料</button><button class="tab" data-tab="runs" aria-selected="false">运行记录</button></nav>
+<div id="content" class="content"><div class="empty"><h2>先把材料放在一起</h2><p>支持粘贴文字、导入 TXT / JSON，以及上传聊天截图。</p></div></div></section>
+<aside class="evidence-panel" aria-label="证据原文"><div class="evidence-heading"><span>原文核对</span><button id="clear-evidence" class="plain">清除选择</button></div><div id="evidence"><div class="evidence-empty"><svg width="58" height="58" viewBox="0 0 58 58" fill="none" aria-hidden="true"><rect x="11" y="8" width="30" height="38" rx="5" stroke="currentColor" stroke-width="1.5"/><path d="M18 18h16M18 25h16M18 32h9" stroke="currentColor" stroke-width="1.5"/><circle cx="39" cy="38" r="9" fill="#f7f8fc" stroke="currentColor" stroke-width="1.5"/><path d="m45 45 7 7" stroke="currentColor" stroke-width="2"/></svg><h3>判断，从原文开始</h3><p>点击报告里的材料编号，在这里查看完整原文与截图。</p></div></div></aside></div>
+</main></div>
+<dialog id="import-dialog"><form id="import-form"><div class="dialog-head"><div><h2>导入聊天记录</h2><p class="muted">保留发言者、原文和截图，时间不明的部分不补写。</p></div><button type="button" class="icon-button close" aria-label="关闭导入">×</button></div>
+<label>案例名称<input name="title" id="import-title" placeholder="例如：比赛奖金分配争议" required maxlength="100"></label>
+<label>聊天文字<textarea id="import-text" rows="9" placeholder="【甲】：原始发言……&#10;&#10;【乙】：回复……"></textarea></label>
+<div class="upload-zone"><label class="file-button" for="import-files">选择文字文件或截图<input id="import-files" type="file" multiple accept=".txt,.json,.jsonl,.png,.jpg,.jpeg"></label><span class="muted">截图在本机识别；单张不超过 8 MB</span></div><div id="upload-list" class="upload-list"></div>
+<label>你想了解什么？<input id="import-question" placeholder="留空时自动发现事件并分析主要争议"></label>
+<p id="import-error" class="error" role="alert"></p><div class="dialog-footer"><button type="button" class="secondary close">取消</button><button type="submit" class="primary" id="save-case">保存材料</button></div></form></dialog>
+<dialog id="settings-dialog"><form id="settings-form"><div class="dialog-head"><h2>模型与接入</h2><button type="button" class="icon-button close" aria-label="关闭设置">×</button></div>
+<label>分析入口<select id="provider"><option value="codex">本机 Codex</option><option value="deepseek">DeepSeek API</option><option value="api">其他兼容 API</option><option value="manual">仅查看 / 导入分析结果</option></select></label>
+<label>模型名称<input id="model" placeholder="Codex 可留空，使用其默认模型"></label><div id="api-fields" class="hidden"><label>接口地址<input id="base-url" placeholder="https://api.deepseek.com"></label><label>API 密钥<input id="api-key" type="password" autocomplete="off" placeholder="仅保存在当前服务进程中"></label><p class="muted">密钥不会出现在报告或日志里。重启后可重新填写，或通过本地 .env 配置。</p></div>
+<div class="connection-note"><strong>Mac 微信</strong><p id="mac-status"></p><p>本版可导入文字与截图。历史自动读取尚未连接；Windows 接入后续实测。</p></div><p id="settings-error" class="error" role="alert"></p><div class="dialog-footer"><button class="primary" type="submit">保存设置</button></div></form></dialog>
+<script src="/app.js"></script></body></html>
