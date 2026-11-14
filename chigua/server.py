@@ -7,6 +7,7 @@ import os
 import secrets
 import threading
 import uuid
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, unquote
@@ -17,6 +18,7 @@ from .report import report_html, report_pdf
 TOKEN = secrets.token_urlsafe(32)
 STATIC = ROOT/'static'
 MAX_BODY = 30*1024*1024
+ZIP_IMPORT_LOCK = threading.Lock()
 
 
 def safe_id(value):
@@ -93,6 +95,11 @@ class Handler(BaseHTTPRequestHandler):
                     'active_jobs':[{k:v for k,v in j.items() if k!='result'} for j in pipeline.JOBS.values() if j['status']=='running']})
             if path=='/api/cases':
                 return self.send(cases())
+            if path=='/api/wechat-zip/defaults':
+                scope_file=DATA/'private'/'wechat-setup'/'scope.json'
+                scope=json.loads(scope_file.read_text()) if scope_file.is_file() else {}
+                return self.send({'group':scope.get('group_name',''),
+                                  'start':scope.get('start','')[:10],'end':scope.get('end','')[:10]})
             if len(bits)==3 and bits[:2]==['api','cases']:
                 c=pipeline.load_case(safe_id(bits[2]))
                 return self.send({'case':c,'runs':pipeline.list_runs(c['id'])})
@@ -142,10 +149,48 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.guard(write=True)
             length=int(self.headers.get('Content-Length','0'))
+            path=urlsplit(self.path).path
+            if path=='/api/wechat-zip/upload':
+                from .wechat_zip import MAX_ARCHIVE
+                if not 0<length<=MAX_ARCHIVE:raise ValueError('每个 ZIP 需要小于 256 MB。')
+                inbox=DATA/'private'/'zip-uploads'
+                if inbox.is_symlink():raise ValueError('上传目录无效。')
+                inbox.mkdir(parents=True,exist_ok=True,mode=0o700);inbox.chmod(0o700)
+                uid=uuid.uuid4().hex;target=inbox/(uid+'.zip')
+                try:
+                    with os.fdopen(os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600),'wb') as f:
+                        remaining=length
+                        while remaining:
+                            chunk=self.rfile.read(min(remaining,1024*1024))
+                            if not chunk:raise ValueError('文件传输未完成，请重新选择 ZIP。')
+                            f.write(chunk);remaining-=len(chunk)
+                    if not zipfile.is_zipfile(target):raise ValueError('文件不是有效的 ZIP，请选择 Dukou 导出的原始压缩包。')
+                except Exception:
+                    target.unlink(missing_ok=True)
+                    raise
+                return self.send({'id':uid,'bytes':length},201)
             if length<=0 or length>MAX_BODY:
                 raise ValueError('请求为空或超过 30 MB。')
             obj=json.loads(self.rfile.read(length))
-            path=urlsplit(self.path).path
+            if path=='/api/wechat-zip/import':
+                from .wechat_zip import import_archives,MAX_ARCHIVE
+                ids=obj.get('uploads')
+                if not isinstance(ids,list) or not 1<=len(ids)<=100:raise ValueError('请选择 1 至 100 个 ZIP。')
+                paths=[DATA/'private'/'zip-uploads'/(safe_id(uid)+'.zip') for uid in ids]
+                if any(p.is_symlink() or not p.is_file() for p in paths):raise ValueError('上传文件已失效，请重新选择。')
+                if sum(p.stat().st_size for p in paths)>MAX_ARCHIVE:raise ValueError('本次 ZIP 总大小超过 256 MB，请分批导入。')
+                title=str(obj.get('title','')).strip()[:100];group=str(obj.get('group','')).strip()[:200]
+                if not title or not group:raise ValueError('请填写案例名称和群名。')
+                if not ZIP_IMPORT_LOCK.acquire(blocking=False):return self.send({'error':'另一份 ZIP 正在导入，请稍后重试。'},409)
+                try:
+                    imported,manifest=import_archives(paths,title=title,group_label=group,
+                        start=str(obj.get('start','')),end=str(obj.get('end','')),data=DATA)
+                    for p in set(paths):p.unlink(missing_ok=True)
+                finally:ZIP_IMPORT_LOCK.release()
+                return self.send({'cases':[{'id':c['id'],'title':c['title']} for c in imported],
+                    'materials':manifest['materials'],'images':manifest['images'],
+                    'excluded':manifest['out_of_window_excluded'],
+                    'duplicates':manifest['duplicate_candidates_retained']},201)
             if path=='/api/upload':
                 name=Path(str(obj.get('name',''))).name
                 ext=Path(name).suffix.lower()

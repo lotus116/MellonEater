@@ -2,7 +2,7 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>知瓜 · 事件与证据工作台</title><link rel="stylesheet" href="/style.css"></head>
 <body><a class="skip" href="#main">跳到报告内容</a>
 <div class="shell"><aside class="sidebar"><a class="brand" href="/" aria-label="知瓜首页"><span class="brand-mark" aria-hidden="true">瓜</span><span>知瓜<small>把前因后果讲清楚</small></span></a>
-<button class="primary wide" id="new-case">＋ 导入聊天记录</button><div class="side-label">我的案例</div><nav id="case-list" aria-label="案例列表"></nav>
+<button class="primary wide" id="new-case">＋ 导入聊天记录</button><button class="secondary wide zip-entry" id="new-zip">导入微信 ZIP</button><div class="side-label">我的案例</div><nav id="case-list" aria-label="案例列表"></nav>
 <div class="side-bottom"><div class="local-dot">材料保存在本机</div><button class="plain wide" id="open-settings">模型与接入设置</button><span class="version">Mac demo / 0.1</span></div></aside>
 <main id="main" tabindex="-1"><header class="topbar"><span id="case-breadcrumb">事件与证据工作台</span><span class="model-pill" id="model-status">正在连接</span></header>
 <section class="case-header"><div><p class="eyebrow">读懂经过，也看清依据</p><h1 id="case-title">打开一个案例</h1><p id="case-meta" class="muted">从左侧导入聊天记录，或查看已有案例。</p></div><div class="header-actions"><button id="analyze" class="primary">生成分析报告</button><button id="export-pdf" class="secondary" disabled>导出 PDF</button></div></section>
@@ -14,12 +14,25 @@
 </main></div>
 <dialog id="import-dialog"><form id="import-form"><div class="dialog-head"><div><h2>导入聊天记录</h2><p class="muted">保留发言者、原文和截图，时间不明的部分不补写。</p></div><button type="button" class="icon-button close" aria-label="关闭导入">×</button></div>
 <label>案例名称<input name="title" id="import-title" placeholder="例如：比赛奖金分配争议" required maxlength="100"></label>
+<p class="notice">已从 Dukou 导出压缩包？<button type="button" class="plain" id="switch-zip">导入微信 ZIP</button></p>
 <label>聊天文字<textarea id="import-text" rows="9" placeholder="【甲】：原始发言……&#10;&#10;【乙】：回复……"></textarea></label>
 <div class="upload-zone"><label class="file-button" for="import-files">选择文字文件或截图<input id="import-files" type="file" multiple accept=".txt,.json,.jsonl,.png,.jpg,.jpeg"></label><span class="muted">截图在本机识别；单张不超过 8 MB</span></div><div id="upload-list" class="upload-list"></div>
 <label>你想了解什么？<input id="import-question" placeholder="留空时自动发现事件并分析主要争议"></label>
 <p id="import-error" class="error" role="alert"></p><div class="dialog-footer"><button type="button" class="secondary close">取消</button><button type="submit" class="primary" id="save-case">保存材料</button></div></form></dialog>
+<dialog id="zip-dialog" aria-labelledby="zip-heading"><form id="zip-form">
+<div class="dialog-head"><div><h2 id="zip-heading">导入微信 ZIP</h2><p class="muted">直接选择 Dukou 导出的压缩包，无需解压。文字和图片一起导入。</p></div><button type="button" class="icon-button close" aria-label="关闭 ZIP 导入">×</button></div>
+<label>选择压缩包（必填，可多选）<input id="zip-files" type="file" accept=".zip,application/zip" multiple required aria-describedby="zip-help"></label>
+<p id="zip-help" class="muted">每次总计不超过 256 MB；分批导出的文件可一起选择。</p>
+<label>案例名称（必填）<input id="zip-title" required maxlength="100" placeholder="例如：群聊事件回顾"></label>
+<label>群名（必填）<input id="zip-group" required maxlength="200" placeholder="这些记录来自哪个群"></label>
+<div class="zip-dates"><label>开始日期（必填）<input id="zip-start" type="date" required></label><label>结束日期（必填）<input id="zip-end" type="date" required></label></div>
+<p class="muted">按香港时间保留所选日期内的记录。手动导出可能有遗漏，导入后请核对。</p>
+<p class="notice">这一步只保存到本机，不会自动发送给模型。</p>
+<p id="zip-progress" role="status" aria-live="polite"></p><p id="zip-error" class="error" role="alert"></p>
+<div class="dialog-footer"><button type="button" class="secondary close">取消</button><button type="submit" class="primary" id="save-zip">导入并查看材料</button></div>
+</form></dialog>
 <dialog id="settings-dialog"><form id="settings-form"><div class="dialog-head"><h2>模型与接入</h2><button type="button" class="icon-button close" aria-label="关闭设置">×</button></div>
 <label>分析入口<select id="provider"><option value="codex">本机 Codex</option><option value="deepseek">DeepSeek API</option><option value="api">其他兼容 API</option><option value="manual">仅查看 / 导入分析结果</option></select></label>
 <label>模型名称<input id="model" placeholder="Codex 可留空，使用其默认模型"></label><div id="api-fields" class="hidden"><label>接口地址<input id="base-url" placeholder="https://api.deepseek.com"></label><label>API 密钥<input id="api-key" type="password" autocomplete="off" placeholder="仅保存在当前服务进程中"></label><p class="muted">密钥不会出现在报告或日志里。重启后可重新填写，或通过本地 .env 配置。</p></div>
-<div class="connection-note"><strong>Mac 微信</strong><p id="mac-status"></p><p>本版可导入文字与截图。历史自动读取尚未连接；Windows 接入后续实测。</p></div><p id="settings-error" class="error" role="alert"></p><div class="dialog-footer"><button class="primary" type="submit">保存设置</button></div></form></dialog>
+<div class="connection-note"><strong>Mac 微信</strong><p id="mac-status"></p><p>本版可导入微信 ZIP、文字与截图。历史自动读取尚未连接；Windows 接入后续实测。</p></div><p id="settings-error" class="error" role="alert"></p><div class="dialog-footer"><button class="primary" type="submit">保存设置</button></div></form></dialog>
 <script src="/app.js"></script></body></html>

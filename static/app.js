@@ -53,3 +53,38 @@ $('#provider').onchange=()=>providerFields(true);
 $('#open-settings').onclick=async()=>{await refreshConfig();$('#provider').value=config.model.provider;$('#model').value=config.model.model==='未配置'||config.model.model==='本机 Codex 默认模型'?'':config.model.model;$('#base-url').value=config.model.base_url;$('#api-key').value='';$('#api-key').placeholder=config.model.has_key?'已配置；留空保留现有密钥':'仅保存在当前服务进程中';$('#mac-status').textContent=`本机微信 ${config.mac.wechat_version||'未检测到'}；本地截图识别${config.mac.ocr_available?'已就绪':'未就绪'}。`;$('#settings-error').textContent='';providerFields();$('#settings-dialog').showModal();};
 $('#settings-form').onsubmit=async e=>{e.preventDefault();try{await api('/api/settings',{provider:$('#provider').value,model:$('#model').value,base_url:$('#base-url').value,api_key:$('#api-key').value});await refreshConfig();$('#settings-dialog').close();feedback('模型设置已更新；后续分析将使用新的入口。');}catch(err){$('#settings-error').textContent=err.message;}};
 (async()=>{try{await refreshConfig();const list=await loadList();const requested=new URLSearchParams(location.search).get('case');if(list.length)await loadCase(list.find(c=>c.id===requested)?.id||list[0].id);if(config.active_jobs?.length){activeJob=config.active_jobs[0].id;$('#analyze').disabled=true;pollJob(activeJob);}}catch(err){feedback('连接本地服务失败：'+err.message,true);}})();
+
+let zipBusy=false;
+async function openZipImport(){
+  $('#zip-form').reset();$('#zip-error').textContent='';$('#zip-progress').textContent='';
+  $('#zip-dialog').showModal();
+  try{const scope=await api('/api/wechat-zip/defaults');
+    for(const field of ['group','start','end'])if(!$('#zip-'+field).value)$('#zip-'+field).value=scope[field]||'';
+  }catch(e){$('#zip-error').textContent='未能读取默认范围，请填写群名和日期；若导入失败，请重新启动 demo。';}
+}
+$('#new-zip').onclick=openZipImport;
+$('#switch-zip').onclick=()=>{$('#import-dialog').close();openZipImport();};
+$('#zip-dialog').addEventListener('cancel',e=>{if(zipBusy)e.preventDefault();});
+$('#zip-files').onchange=()=>{const files=[...$('#zip-files').files];$('#zip-error').textContent='';$('#zip-progress').textContent=`已选择 ${files.length} 个 ZIP`;if(files.length&&!$('#zip-title').value)$('#zip-title').value=files[0].name.replace(/\.zip$/i,'').slice(0,100);};
+$('#zip-form').onsubmit=async e=>{
+  e.preventDefault();if(zipBusy)return;
+  const files=[...$('#zip-files').files];$('#zip-error').textContent='';
+  if(!files.length||files.length>100||files.some(f=>! /\.zip$/i.test(f.name))||files.reduce((n,f)=>n+f.size,0)>256*1024*1024){$('#zip-error').textContent='请选择 1 至 100 个 ZIP，总大小不超过 256 MB。';return;}
+  const start=$('#zip-start').value,end=$('#zip-end').value;
+  if(start>end){$('#zip-error').textContent='结束日期不能早于开始日期。';return;}
+  const payload={title:$('#zip-title').value,group:$('#zip-group').value,start:start+'T00:00:00+08:00',end:end+'T23:59:59+08:00',uploads:[]};
+  zipBusy=true;$('#zip-form').setAttribute('aria-busy','true');
+  $('#zip-form').querySelectorAll('input,button').forEach(el=>el.disabled=true);
+  try{
+    for(let i=0;i<files.length;i++){
+      $('#zip-progress').textContent=`正在保存第 ${i+1}/${files.length} 个 ZIP 到本机…`;
+      const response=await fetch('/api/wechat-zip/upload',{method:'POST',headers:{'Content-Type':'application/zip','X-Chigua-Token':config.token},body:files[i]});
+      const result=await response.json();if(!response.ok)throw Error(result.error||'ZIP 保存失败，请重试。');payload.uploads.push(result.id);
+    }
+    $('#zip-progress').textContent='正在整理文字、时间和对应图片…';
+    const result=await api('/api/wechat-zip/import',payload);
+    $('#zip-dialog').close();tab='materials';await loadCase(result.cases[0].id);
+    feedback(`已导入 ${result.materials} 条材料、${result.images.available||0} 张图片，分为 ${result.cases.length} 包。缺图 ${result.images.unavailable||0} 张，范围外排除 ${result.excluded} 条，重复候选 ${result.duplicates} 条保留。请先检查原文，再生成报告。`);
+  }catch(err){$('#zip-error').textContent=err.message;$('#zip-progress').textContent='导入未完成，所选文件仍保留，可修改范围后重试。';}
+  finally{zipBusy=false;$('#zip-form').setAttribute('aria-busy','false');$('#zip-form').querySelectorAll('input,button').forEach(el=>el.disabled=false);}
+};

@@ -1,4 +1,6 @@
 import json
+import io
+import zipfile
 import os
 import tempfile
 import threading
@@ -30,7 +32,7 @@ class ServerTests(unittest.TestCase):
         h={'Content-Type':'application/json'}
         if token:h['X-Chigua-Token']=server.TOKEN
         h.update(headers or {})
-        req=urllib.request.Request(self.base+path,data=json.dumps(data).encode() if data is not None else None,headers=h)
+        req=urllib.request.Request(self.base+path,data=data if isinstance(data,bytes) else json.dumps(data).encode() if data is not None else None,headers=h)
         try:
             with urllib.request.urlopen(req) as r:return r.status,json.load(r)
         except urllib.error.HTTPError as e:return e.code,json.load(e)
@@ -67,6 +69,43 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(code,400);self.assertEqual(list((self.root/'runs').glob('*/result.json')),[])
     def test_no_static_path_traversal(self):
         self.assertEqual(self.request('/%2e%2e/.env')[0],404)
+    def zip_payload(self):
+        from PIL import Image
+        picture=io.BytesIO();Image.new('RGB',(10,12),'blue').save(picture,'PNG')
+        blob=io.BytesIO()
+        with zipfile.ZipFile(blob,'w') as archive:
+            archive.writestr('聊天记录.txt','·合成甲\n2026年11月1日 12:00\n正文\n\n·合成乙\n2026年11月1日 12:01\n[图片] one.png\n')
+            archive.writestr('media/one.png',picture.getvalue())
+        return blob.getvalue()
+    def test_browser_zip_upload_import_roundtrip_no_model(self):
+        code,upload=self.request('/api/wechat-zip/upload',self.zip_payload(),headers={'Content-Type':'application/zip'})
+        self.assertEqual(code,201)
+        file=self.root/'private/zip-uploads'/(upload['id']+'.zip')
+        self.assertEqual(file.stat().st_mode&0o077,0)
+        with patch('chigua.provider.generate') as generate:
+            code,result=self.request('/api/wechat-zip/import',{'title':'合成 ZIP','group':'合成群','start':'2026-11-01T00:00:00+08:00','end':'2026-11-01T23:59:59+08:00','uploads':[upload['id']]})
+            generate.assert_not_called()
+        self.assertEqual(code,201);self.assertEqual(result['materials'],2);self.assertEqual(result['images']['available'],1)
+        case=self.request('/api/cases/'+result['cases'][0]['id'])[1]['case']
+        self.assertTrue((self.root/'uploads'/case['messages'][1]['image']).is_file())
+        self.assertFalse(file.exists());self.assertFalse(case['capture']['cloud_analysis_started'])
+    def test_zip_upload_guard_and_corrupt_file(self):
+        for options in [{'token':False},{'headers':{'Origin':'https://example.com'}}]:
+            self.assertEqual(self.request('/api/wechat-zip/upload',self.zip_payload(),**options)[0],403)
+        self.assertEqual(self.request('/api/wechat-zip/upload',b'bad zip')[0],400)
+        self.assertEqual(list((self.root/'private/zip-uploads').glob('*.zip')),[])
+    def test_zip_import_rejects_local_paths_and_bad_scope(self):
+        payload={'title':'Test','group':'Synthetic','start':'bad','end':'bad','uploads':['../../.env']}
+        self.assertEqual(self.request('/api/wechat-zip/import',payload)[0],400)
+        _,upload=self.request('/api/wechat-zip/upload',self.zip_payload())
+        payload['uploads']=[upload['id']]
+        self.assertEqual(self.request('/api/wechat-zip/import',payload)[0],400)
+        self.assertEqual(list((self.root/'cases').glob('*.json')),[])
+    def test_zip_defaults_expose_only_scope(self):
+        folder=self.root/'private/wechat-setup';folder.mkdir(parents=True)
+        (folder/'scope.json').write_text(json.dumps({'group_name':'合成群','start':'2026-11-01T00:00:00+08:00','end':'2026-11-02T23:59:59+08:00','private_extra':'not-returned'}))
+        code,result=self.request('/api/wechat-zip/defaults')
+        self.assertEqual(result,{'group':'合成群','start':'2026-11-01','end':'2026-11-02'})
 
 
 if __name__=='__main__':unittest.main()
