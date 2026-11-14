@@ -137,6 +137,7 @@ def supplement_note(message):
 def reader_html(case,run):
     r=run['report']['reader'];lookup={m['id']:m for m in case['messages']}
     assessment = r.get('assessment', [])
+    comparisons = r.get('dispute_comparisons', [])
     quality = run.get('editorial_quality', {})
     limitations = quality.get('limitations', []) if quality.get('status') == 'limited' else []
     labels=source_labels(case);sources=cited_sources(case,r)
@@ -171,6 +172,7 @@ def reader_html(case,run):
       '<div class="opening"><h1>'+escape(r['title'])+'</h1><p class="lead">'+escape(r['lead'])+'</p></div>',
       '<section class="now" id="now"><small>目前进展</small><h2>'+escape(r['verdict_title'])+'</h2>',p(r['verdict']),refs(r['verdict_source_ids']),'</section>',
       '<nav class="reader-nav" aria-label="阅读导航">'+('<a href="#turns">关键转折</a>' if r.get('story') else '')+
+      ('<a href="#competing-accounts">各方怎么说</a>' if comparisons else '')+
       ('<a href="#assessment">怎么看双方的做法</a>' if assessment else '')+
       ('<a href="#unresolved">待确认</a>' if r['open_questions'] else '')+
       '<a href="#details">详细经过</a><a href="#originals">核对原文</a></nav>']
@@ -181,13 +183,24 @@ def reader_html(case,run):
         for i,step in enumerate(story['arc'],1):
             phase = step.get('phase', '')
             when = step.get('event_time')
-            metadata = [value for value in (phase, when, step['order_basis']) if value]
+            metadata = [value for value in (phase, when, step['order_basis'], step.get('source_attribution')) if value]
             parts.extend(['<li data-phase="'+escape(phase)+'"><details class="turn" id="event-'+str(i)+'">',
                           '<summary><span class="turn-number" aria-hidden="true">'+str(i)+'</span><span>',
                           '<span class="event-meta">'+escape(' · '.join(metadata))+'</span>',
                           '<strong>'+escape(step['stage'])+'</strong><span class="turn-brief">'+escape(step['happened'])+'</span></span></summary>',
                           '<div class="turn-detail">'+p(step['changed'])+refs(step['source_ids'])+'</div></details></li>'])
         parts.append('</ol><details class="scope"><summary>这些时间如何确定</summary>'+p(story['timeline_note'])+'</details></section>')
+    if comparisons:
+        parts.append('<section id="competing-accounts"><h2>各方怎么说</h2>')
+        for dispute in comparisons:
+            parts.append('<article class="assessment-item"><h3>'+escape(dispute['topic'])+'</h3>')
+            for account in dispute['accounts']:
+                parts.extend(['<p><strong>'+escape(account['speaker'])+'</strong> '+escape(account['statement'])+'</p>',
+                              refs(account['source_ids'])])
+            if dispute['limit']:
+                parts.append(p(dispute['limit']))
+            parts.append('</article>')
+        parts.append('</section>')
     if assessment:
         parts.append('<section id="assessment"><h2>怎么看双方的做法</h2>')
         for item in assessment:

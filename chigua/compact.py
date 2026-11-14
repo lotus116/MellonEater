@@ -5,12 +5,13 @@ import json
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
-from . import event_sequence, provider
+from . import event_sequence, evidence_first, provider
 from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, ASSESSMENT_READER_SCHEMA, TIMED_READER_SCHEMA, TIMED_ARC_STEP, schema_obj, validate_schema, validate_report, write_json, now
 from .checkpoints import CallFailure,digest
 from .editor import normalize_presentations
 
-VERSION='compact-v13'
+VERSION='compact-v14'
+CROSSCHECK_VERSION='compact-v13'
 ACTION_PREVIOUS_VERSION='compact-v12'
 ANCHORED_PREVIOUS_VERSION='compact-v11'
 TIMED_PREVIOUS_VERSION='compact-v9'
@@ -18,12 +19,12 @@ COMPARATIVE_PREVIOUS_VERSION='compact-v8'
 SINGLE_REVISION_PREVIOUS_VERSION='compact-v7'
 NUMBERED_PREVIOUS_VERSION='compact-v6'
 PREVIOUS_VERSION='compact-v5'
-ACTION_VERSIONS={VERSION,ACTION_PREVIOUS_VERSION}
+ACTION_VERSIONS={CROSSCHECK_VERSION,ACTION_PREVIOUS_VERSION}
 ANCHORED_VERSIONS=ACTION_VERSIONS | {ANCHORED_PREVIOUS_VERSION}
 TIMED_VERSIONS=ANCHORED_VERSIONS | {TIMED_PREVIOUS_VERSION}
 COMPARATIVE_VERSIONS=TIMED_VERSIONS | {COMPARATIVE_PREVIOUS_VERSION}
 SINGLE_REVISION_VERSIONS=COMPARATIVE_VERSIONS | {SINGLE_REVISION_PREVIOUS_VERSION}
-SUPPORTED_VERSIONS=SINGLE_REVISION_VERSIONS | {NUMBERED_PREVIOUS_VERSION,PREVIOUS_VERSION}
+SUPPORTED_VERSIONS=SINGLE_REVISION_VERSIONS | {VERSION,NUMBERED_PREVIOUS_VERSION,PREVIOUS_VERSION}
 RULES=(ROOT/'skills/chigua-analysis/references/compact-workflow.md').read_text()
 CONTEXT_RULE = (
     '先辨认冲突前是否已有积怨：分工、承诺、交付、决策依据和信任变化。'
@@ -603,7 +604,7 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
                      '后人补贴或回述旧话的时间只能用于描述补贴或回述本身。'
                      '若同一节点夹写其他场合的动作，优先保留与该节点分类相符的句子。'
                      '如仍有漏项、错序或日期缺少支撑，指出具体节点及材料；没有安全替换时 replacement 留原样，原因将作为局限。')
-        if version == VERSION:
+        if version == CROSSCHECK_VERSION:
             task += '\n'+REVIEW_CROSSCHECK
         if retry_notes:
             task += '\n上轮核对未完成。重新检查这些字段，问题只写最必要的几条；校验反馈：'+dump(retry_notes)
@@ -629,7 +630,7 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
             write_json(folder/'checks.json',history)
             continue
         changes, rejected = checked_edits(review, selected, candidate, pack, include_reasons=single_revision,
-                                          contextual=version==VERSION)
+                                          contextual=version==CROSSCHECK_VERSION)
         pending = []
         history.append({'revision':revision,'review':review,'unresolved':rejected})
         write_json(folder/'checks.json',history)
@@ -813,6 +814,62 @@ def revision_audit_task(pack, candidate, previous):
             '\n相关材料：'+dump(pack)+'\n先前问题：'+dump(previous)+'\n修改后的字段：'+dump(changes))
 
 
+def execute_evidence_first(case, folder, pack, ids, trace, checked_call):
+    from .report import reader_html
+
+    def bind(value):
+        ledger = evidence_first.build(value, pack)
+        if not ledger['events']:
+            raise ValueError('没有任何事件能定位到输入原文。')
+        return ledger
+
+    ledger = checked_call('bind_sources',evidence_first.RULES+'\n材料：'+dump(pack),
+                          evidence_first.LEDGER_SCHEMA,bind,tokens=3400)
+    write_json(folder/'bound-evidence.json',ledger)
+    approved = {sid for event in ledger['events'] for sid in event['source_ids']}
+    approved.update(sid for dispute in ledger['disputes'] for account in dispute['accounts']
+                    for sid in account['source_ids'])
+    # The writer sees reviewed extracts, not all the wrappers and OCR blocks.
+    context = {'question':pack['question'],'scope':pack['scope'],'evidence':ledger}
+
+    def prepare_report(value):
+        prose = copy.deepcopy(value)
+        prose_limits = evidence_first.check_prose(prose,ledger)
+        draft = evidence_first.attach(prose,ledger)
+        draft['timeline'] = derived_timeline(draft['reader']['story']['arc'])
+        if not set(draft['reader']['verdict_source_ids']) <= approved:
+            raise ValueError('现状引用超出了已核对的材料。')
+        reader = draft['reader']
+        linked = [p for chapter in reader['chapters'] for p in chapter['paragraphs']]
+        linked += reader['assessment']
+        if any(not set(item['source_ids'] + item.get('conflict_ids',[])) <= approved for item in linked):
+            raise ValueError('正文引用超出了已核对的材料。')
+        for item in reader['assessment']:
+            if not item['counterpoint'].strip() and (item['inference'].strip() or item['conflict_ids']):
+                item['counterpoint'] = '这项判断的进一步解释仍待核对。'
+        normalized = map_refs(draft,{v:k for k,v in ids.items()})
+        normalized['reader'],_ = normalize_presentations(normalized['reader'],case['messages'])
+        remove_headline_durations(draft,normalized)
+        validate_report(normalized,case['messages'])
+        return normalized,prose_limits
+
+    report, prose_limits = checked_call('compose',evidence_first.WRITE_RULES+'\n核对底稿：'+dump(context),
+                          evidence_first.PROSE,prepare_report,tokens=3600)
+    limitations = list(ledger['findings']) + prose_limits
+    if any(not event['bound'] for event in ledger['events']):
+        limitations.append('存在归属尚待核对的动作，时间线已按原文保留相关缺口。')
+    quality = {'status':'limited' if limitations else 'passed','revisions':0,
+               'layout':{'status':'web_checked'},
+               'note':'原文与时间绑定已由程序核对，正文判断仍需结合材料阅读。'}
+    if limitations:
+        quality['limitations'] = limitations
+    reader_html(case,{'report':report,'created_at':now(),'editorial_quality':quality})
+    result = {'report':report,'trace':trace,'workflow_version':VERSION,'quality':quality}
+    if not limitations:
+        write_json(folder/'accepted.json',result)
+    return result
+
+
 def execute(case,folder,progress=lambda stage:None,*,version=VERSION):
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
     pack,ids,assets=prepare(case);trace=[];history=[]
@@ -864,6 +921,8 @@ def execute(case,folder,progress=lambda stage:None,*,version=VERSION):
         observations.extend(rows)
     pack['image_observations']=observations
     write_json(folder/'evidence-pack.json',pack)
+    if version == VERSION:
+        return execute_evidence_first(case,folder,pack,ids,trace,checked_call)
     context=RULES+'\n材料（短编号与原记录一一对应，时间字段为消息时间）：'+dump(pack)
     if version in COMPARATIVE_VERSIONS:
         context = READING_RULES + '\n' + CONTEXT_RULE + '\n' + context

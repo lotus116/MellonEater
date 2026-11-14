@@ -46,7 +46,7 @@ class EventSequenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, patch.object(provider,'generate',side_effect=[
             (draft,{}),({'issues':[]},{}),
         ]) as generate:
-            result = compact.execute(case,Path(temp))
+            result = compact.execute(case,Path(temp),version=compact.CROSSCHECK_VERSION)
         arc = result['report']['reader']['story']['arc']
         self.assertEqual(generate.call_count,2)
         self.assertEqual(result['report']['reader']['assessment'][0]['conflict_ids'],['M0002'])
