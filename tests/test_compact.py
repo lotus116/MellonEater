@@ -13,6 +13,11 @@ def composed(*, compare=False):
     if compare:
         for step in draft['reader']['story']['arc']:
             step.update(phase='经过',event_time='')
+        for step in draft['reader']['story']['arc']:
+            step['source_check'] = {'actor':'甲','scene':'群聊','mode':'当时记录',
+                                    'anchor':{'source_id':'S001','quote':'我付了钱','from':'text'},
+                                    'time_quote':'','basis':'发言原文'}
+        draft['disagreements'] = []
         draft['reading_choice'] = {
             'options':[{'id':'A','explanation':'付款进度尚未确认。','limits':'只有本人说法。','source_ids':['S001']}],
             'selected_id':'A','notes':'现有材料只覆盖付款说法。',
@@ -180,6 +185,89 @@ class CompactTests(unittest.TestCase):
         draft['reading_choice']['options'][0]['source_ids'] = ['S404']
         with self.assertRaisesRegex(ValueError,'可回查'):
             compact.mechanical(draft,self.case,{'M0001':'S001'},compare=True)
+    def test_unattributed_headline_duration_is_removed_even_when_auditor_misses_it(self):
+        draft = composed(compare=True)
+        draft['title'] = '退款搁了五天'
+        draft['reader'].update(title='退款搁了五天', deck='押金晚了5天才退')
+        topic = draft['reader']['story']['central_question']
+        with patch.object(provider,'generate',side_effect=[(draft,{}),({'issues':[]},{})]) as calls:
+            result = compact.execute(self.case,self.folder)
+        self.assertEqual(result['report']['title'],topic)
+        self.assertEqual(result['report']['reader']['title'],topic)
+        self.assertEqual(result['report']['reader']['deck'],'')
+        self.assertEqual(calls.call_count,2)
+        self.assertNotIn('source_check',result['report']['reader']['story']['arc'][0])
+        self.assertFalse(compact.contains_headline_duration('2026年4月5日的退款争议'))
+
+    def test_final_review_includes_unedited_headline_and_full_event_sequence(self):
+        draft = composed(compare=True)
+        code = next(k for k,v in compact.numbered_fields(draft).items() if v=='/reader/verdict')
+        edit = {'field_id':code,'excerpt':'仍需核对。','replacement':'甲称付过钱。',
+                'evidence':[{'source_id':'S001','quote':'我付了钱'}],'reason':'交代是谁的说法'}
+        with patch.object(provider,'generate',side_effect=[(draft,{}),({'issues':[edit]},{}),
+                                                           ({'issues':[]},{})]) as calls:
+            compact.execute(self.case,self.folder)
+        final_review = calls.call_args.args[0]
+        self.assertIn('/reader/title',final_review)
+        self.assertIn('/reader/story/arc/0/happened',final_review)
+        self.assertIn('"source_ids":["S001"]',final_review)
+        self.assertIn('我付了钱',final_review)
+
+    def test_time_checker_requires_inner_chat_clock_or_defers(self):
+        draft = composed(compare=True)
+        arc = draft['reader']['story']['arc'][0]
+        arc.update(event_time='4月2日10点',order_basis='时间戳可确认')
+        check = arc['source_check']
+        self.case['messages'][0]['image'] = 'synthetic.png'
+        obs = {'source_id':'S001','visible_text':'17:59\n昨天 10:00\n甲：我付了钱',
+               'visible_time':'17:59; 昨天 10:00','description':'测试群','uncertainty':''}
+        check.update(anchor={**check['anchor'],'from':'image'}, time_quote='17:59')
+        pack, _, _ = compact.prepare(self.case)
+        pack['image_observations'] = [obs]
+        self.assertEqual(compact.source_check_limits(draft,pack)[1],[0])
+        check['time_quote'] = '昨天 10:00'
+        self.assertEqual(compact.source_check_limits(draft,pack),([],[]))
+        check['mode'] = '后来回述'
+        self.assertEqual(compact.source_check_limits(draft,pack)[1],[0])
+        with patch.object(provider,'generate',side_effect=[({'observations':[obs]},{}),(draft,{}),
+                                                           ({'issues':[]},{})]):
+            result = compact.execute(self.case,self.folder)
+        self.assertEqual(result['quality']['status'],'limited')
+        step = result['report']['reader']['story']['arc'][0]
+        self.assertEqual((step['event_time'],step['order_basis']),('','先后未确认'))
+
+    def test_later_recount_goes_before_adjacent_later_timestamp(self):
+        draft = composed(compare=True)
+        row = draft['reader']['story']['arc'][0]
+        newer, older, undated = (copy.deepcopy(row) for _ in range(3))
+        newer.update(stage='核对凭证',event_time='4月10日上午',order_basis='时间戳可确认')
+        older.update(stage='旧群催问',event_time='4月10日前三天',order_basis='当事人回述')
+        older['source_check'].update(mode='后来回述',
+                                     anchor={'source_id':'S002','from':'text','quote':'三天前我就在群里问过'})
+        undated.update(stage='私信回信',order_basis='当事人回述')
+        draft['reader']['story']['arc'] = [newer,older,undated]
+        public = copy.deepcopy(draft)
+        pack = {'messages':[{'id':'S001','message_time':'2026-04-10T10:00:00+08:00'},
+                            {'id':'S002','message_time':'2026-04-10T10:03:00+08:00'}]}
+        self.assertTrue(compact.order_supported_days(draft,public,pack,[]))
+        self.assertEqual([step['stage'] for step in public['reader']['story']['arc']],
+                         ['旧群催问','核对凭证','私信回信'])
+        draft['reader']['story']['arc'] = [newer,undated,older]
+        self.assertFalse(compact.order_supported_days(draft,copy.deepcopy(draft),pack,[]))
+
+    def test_counterclaims_verify_each_quote_and_its_material_type(self):
+        draft = composed(compare=True)
+        self.case['messages'][0]['text'] = '我付了钱，中间两天'
+        self.case['messages'].append({'id':'M0002','speaker':'乙','text':'我记得是五天'})
+        pack, _, _ = compact.prepare(self.case)
+        pack['image_observations'] = []
+        accounts = [{'source_id':'S001','quote':'中间两天','from':'text'},
+                    {'source_id':'S002','quote':'我记得是五天','from':'text'}]
+        draft['disagreements'] = [{'topic':'退款用了多久','accounts':accounts}]
+        self.assertEqual(compact.source_check_limits(draft,pack),([],[]))
+        accounts[1]['from'] = 'image'
+        self.assertEqual(len(compact.source_check_limits(draft,pack)[0]),1)
+
     def test_exact_paragraph_quote_narrows_patch_to_text_and_keeps_evidence(self):
         pack,_,_=compact.prepare(self.case)
         draft=composed()

@@ -3,18 +3,21 @@ from __future__ import annotations
 import copy
 import json
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
 from . import provider
-from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, ASSESSMENT_READER_SCHEMA, TIMED_READER_SCHEMA, schema_obj, validate_schema, validate_report, write_json, now
+from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, ASSESSMENT_READER_SCHEMA, TIMED_READER_SCHEMA, TIMED_ARC_STEP, schema_obj, validate_schema, validate_report, write_json, now
 from .checkpoints import CallFailure,digest
 from .editor import normalize_presentations
 
-VERSION='compact-v9'
+VERSION='compact-v11'
+TIMED_PREVIOUS_VERSION='compact-v9'
 COMPARATIVE_PREVIOUS_VERSION='compact-v8'
 SINGLE_REVISION_PREVIOUS_VERSION='compact-v7'
 NUMBERED_PREVIOUS_VERSION='compact-v6'
 PREVIOUS_VERSION='compact-v5'
-COMPARATIVE_VERSIONS={VERSION,COMPARATIVE_PREVIOUS_VERSION}
+TIMED_VERSIONS={VERSION,TIMED_PREVIOUS_VERSION}
+COMPARATIVE_VERSIONS=TIMED_VERSIONS | {COMPARATIVE_PREVIOUS_VERSION}
 SINGLE_REVISION_VERSIONS=COMPARATIVE_VERSIONS | {SINGLE_REVISION_PREVIOUS_VERSION}
 SUPPORTED_VERSIONS=SINGLE_REVISION_VERSIONS | {NUMBERED_PREVIOUS_VERSION,PREVIOUS_VERSION}
 RULES=(ROOT/'skills/chigua-analysis/references/compact-workflow.md').read_text()
@@ -58,6 +61,35 @@ CHRONOLOGY_RULE = (
     '只挑 3 至 6 个真正改变局势或解释反应的节点；材料不足时可更少。'
     '压缩后台 events、timeline、claims 的重复内容，把篇幅留给主线和具体行为判断。'
 )
+SOURCE_RULES=(ROOT/'skills/chigua-analysis/references/source-checks.md').read_text()
+SOURCE_QUOTE = schema_obj({
+    'source_id':STR, 'quote':STR, 'from':{'type':'string','enum':['text','image']},
+})
+ANCHOR_CHECK = schema_obj({
+    'actor':STR, 'scene':STR,
+    'mode':{'type':'string','enum':['当时记录','后来回述','转述行为本身']},
+    'anchor':SOURCE_QUOTE, 'time_quote':STR, 'basis':STR,
+})
+DISAGREEMENT = schema_obj({'topic':STR, 'accounts':{'type':'array','items':SOURCE_QUOTE}})
+CHECKED_READER = schema_obj({
+    **TIMED_READER_SCHEMA['properties'],
+    'story':schema_obj({
+        **TIMED_READER_SCHEMA['properties']['story']['properties'],
+        'arc':{'type':'array','items':schema_obj({**TIMED_ARC_STEP['properties'],'source_check':ANCHOR_CHECK})},
+    }),
+})
+CHECKED_OUTPUT = schema_obj({
+    'disagreements':{'type':'array','items':DISAGREEMENT},
+    **{key:value for key,value in TIMED_OUTPUT['properties'].items() if key != 'timeline'},
+    'reader': CHECKED_READER,
+})
+# Apply only to headlines, where attributing a duration usually takes more space
+# than omitting it. The text of both accounts can still appear in the report.
+HEADLINE_DURATION = re.compile(
+    r'(?:[0-9０-９]+(?:[.．][0-9０-９]+)?|[零〇一二三四五六七八九十百千两兩俩幾几数數半]+)\s*(?:个|個)?'
+    r'(?:小时|小時|分钟|分鐘|秒钟|秒鐘|星期|周|週|天|个月|個月|日(?=内|後|后|前)|秒|年(?!代))'
+)
+
 POLICY={'writer_tokens':6000,'audit_tokens':4000,'patch_tokens':4000,'image_tokens':6000,
         'audit_thinking':'disabled','max_revisions':2,'image_batch':4}
 VISION_SCHEMA=schema_obj({'observations':{'type':'array','items':schema_obj({
@@ -134,7 +166,7 @@ def quoted_fields(value, path, quote):
     """Search prose fields, leaving citation lists and internal IDs untouched."""
     if isinstance(value, dict):
         for field, child in value.items():
-            if field in {'id', 'event_id', 'kind', 'status', 'order_basis', 'phase'} or field.endswith(('_id', '_ids')):
+            if field in {'id', 'event_id', 'kind', 'status', 'order_basis', 'phase', 'source_check'} or field.endswith(('_id', '_ids')):
                 continue
             yield from quoted_fields(child, f'{path}/{field}', quote)
     elif isinstance(value, list):
@@ -257,7 +289,7 @@ def audit_retry_reason(path, audit, current_error):
 
 
 def numbered_fields(candidate):
-    public_fields = {key:value for key,value in candidate.items() if key != 'reading_choice'}
+    public_fields = {key:value for key,value in candidate.items() if key not in {'reading_choice','disagreements'}}
     paths = sorted(path for path, value in quoted_fields(public_fields, '', '')
                    if value.strip() and not path.endswith('/quote_text'))
     return {f'F{index:03d}': path for index, path in enumerate(paths, 1)}
@@ -303,15 +335,156 @@ def checked_edits(review, fields, candidate, pack, *, include_reasons=False):
     return changes, rejected
 
 
+def primary_review_fields(fields):
+    return {code:path for code,path in fields.items()
+            if path.startswith('/reader/') or path in {'/title','/summary'}}
+
+
+def contains_headline_duration(title):
+    # A calendar year is a date, not the elapsed duration at issue.
+    return bool(HEADLINE_DURATION.search(re.sub(r'(?<![0-9０-９])[12１２][0-9０-９]{3}年', '', title)))
+
+
+def remove_headline_durations(candidate, report):
+    """Keep a contested duration from becoming the public framing."""
+    reader = candidate['reader']
+    topic = reader['story']['central_question']
+    if not topic.strip() or contains_headline_duration(topic):
+        topic = '事件经过与争议'
+    changes = []
+    for parent, published, field, replacement in (
+        (candidate, report, 'title', topic),
+        (reader, report['reader'], 'title', topic),
+        (reader, report['reader'], 'deck', ''),
+    ):
+        if contains_headline_duration(parent[field]):
+            changes.append({'original':parent[field], 'replacement':replacement})
+            parent[field] = published[field] = replacement
+    return changes
+
+
+def source_check_limits(candidate, pack):
+    """Validate literal anchors and detect time claims based on wrappers."""
+    disagreements = candidate.get('disagreements', [])
+    rows = {row['id']:row for row in pack['messages']}
+    images = {obs['source_id']:obs for obs in pack['image_observations']}
+
+    def matches(anchor):
+        row = rows.get(anchor['source_id'], {})
+        image = images.get(row.get('image_observation_ref'), {})
+        content = row.get('text', '') if anchor['from'] == 'text' else image.get('visible_text', '')
+        return bool(anchor['quote'].strip() and anchor['quote'] in content)
+
+    limits = []
+    for item in disagreements:
+        accounts = item['accounts']
+        if (len({entry['source_id'] for entry in accounts}) < 2
+                or len({entry['quote'] for entry in accounts}) < 2
+                or not all(matches(entry) for entry in accounts)):
+            limits.append('一项争议的对照原文未能核对，双方说法需回查。')
+    uncertain = []
+    for index, step in enumerate(candidate['reader']['story']['arc']):
+        entry = step.get('source_check')
+        if not entry or not matches(entry['anchor']) or entry['anchor']['source_id'] not in step['source_ids']:
+            uncertain.append(index)
+            continue
+        if not all(entry[key].strip() for key in ('actor','scene','basis')):
+            uncertain.append(index)
+            continue
+        if step['order_basis'] != '时间戳可确认':
+            continue
+        anchor = entry['anchor']
+        row = rows[anchor['source_id']]
+        time_quote = entry['time_quote'].strip()
+        if anchor['from'] == 'text':
+            clock_matches = bool(time_quote and time_quote in (row.get('message_time') or ''))
+        else:
+            # Reuse OCR, but require a chat time that also appears in the
+            # transcript body. Standalone clock on its first line is the UI.
+            image = images[row['image_observation_ref']]
+            body = image['visible_text'].strip().splitlines()[1:]
+            clock_matches = (bool(time_quote) and time_quote in image['visible_time']
+                             and any(time_quote in line for line in body)
+                             and entry['mode'] == '当时记录')
+        if not clock_matches or entry['mode'] == '后来回述':
+            uncertain.append(index)
+    limits.extend(f'时间线第 {index+1} 项的动作或时间依据未能从对应材料核对。'
+                  for index in uncertain)
+    return limits, uncertain
+
+
+RELATIVE_DAY = re.compile(r'昨天|昨日|前天|(?<![0-9])(?:[1-9][0-9]?|[一二两三四五六七八九十])天前')
+DAY_WORDS = dict(zip('一二两三四五六七八九十', (1,2,2,3,4,5,6,7,8,9,10)))
+DAYS_BEFORE_DATE = re.compile(r'(?<=日)前([1-9][0-9]?|[一二两三四五六七八九十])天')
+
+
+def timeline_day(step, messages):
+    """Only anchor days supported by a timestamped message and its literal text."""
+    check = step['source_check']
+    anchor = check['anchor']
+    if anchor['from'] != 'text':
+        return None
+    timestamp = messages[anchor['source_id']].get('message_time')
+    if not timestamp:
+        return None
+    try:
+        sent_day = datetime.fromisoformat(timestamp).date()
+    except ValueError:
+        return None
+    if step['order_basis'] == '时间戳可确认':
+        return sent_day
+    if check['mode'] != '后来回述':
+        return None
+    # Require the same single backward relative expression in the report
+    # and the source. Do not convert a quoted screenshot's relative clock.
+    event_time = DAYS_BEFORE_DATE.sub(r'\1天前', step['event_time'])
+    shown = RELATIVE_DAY.findall(event_time)
+    spoken = RELATIVE_DAY.findall(anchor['quote'])
+    if len(shown) != 1 or spoken != shown or '转发' in check['scene']:
+        return None
+    word = spoken[0]
+    if word in {'昨天','昨日','前天'}:
+        offset = 2 if word == '前天' else 1
+    else:
+        number = word[:-2]
+        offset = int(number) if number.isdigit() else DAY_WORDS[number]
+    return sent_day - timedelta(days=offset)
+
+
+def order_supported_days(candidate, report, pack, uncertain):
+    """Order comparable dates, leaving unsupported cross-scene positions explicit."""
+    messages = {row['id']:row for row in pack['messages']}
+    public_arc = report['reader']['story']['arc']
+    # Sort only contiguous dated rows. Crossing an undated row could
+    # reverse a supported order such as a reply after a quoted request.
+    dates = [timeline_day(step,messages) if index not in uncertain and step['phase'] != '前情' else None
+             for index, step in enumerate(candidate['reader']['story']['arc'])]
+    changed = False
+    start = 0
+    for end, day in enumerate(dates + [None]):
+        if day is not None:
+            continue
+        if dates[start:end] != sorted(dates[start:end]):
+            ordered = sorted(zip(dates[start:end], public_arc[start:end]), key=lambda pair:pair[0])
+            public_arc[start:end] = [step for _, step in ordered]
+            changed = True
+        start = end + 1
+    return changed
+
+
 def review_numbered(case, folder, pack, ids, candidate, original, trace, call, version):
     """Review a numbered draft, apply verified edits, and check the result."""
     from .report import reader_html
 
+    if version == VERSION:
+        changes = remove_headline_durations(candidate, original)
+        write_json(folder/'headline-normalization.json', changes)
     fields = numbered_fields(candidate)
+    primary = primary_review_fields(fields)
     write_json(folder/'review-fields.json', fields)
     history = []
     seen = {digest(candidate)}
-    selected = fields
+    selected = primary if version == VERSION else fields
     retry_notes = []
     pending = []
     single_revision = version in SINGLE_REVISION_VERSIONS
@@ -320,6 +493,19 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
     initial_limitations = []
 
     def finish(status, revisions, limitations=()):
+        if version == VERSION:
+            source_limits, uncertain = source_check_limits(candidate, pack)
+            for index in uncertain:
+                step = original['reader']['story']['arc'][index]
+                step.update(event_time='', order_basis='先后未确认')
+            if order_supported_days(candidate,original,pack,uncertain):
+                original['reader']['story']['timeline_note'] += (
+                    ' 可按材料核对的日期已排序；未给日期的跨场景动作，仅保留原文支持的相对顺序。')
+                source_limits.append('已校正相邻、有日期依据的节点顺序；跨场景的完整顺序仍需对照原文。')
+            original['timeline'] = derived_timeline(original['reader']['story']['arc'])
+            limitations = list(limitations) + source_limits
+            if source_limits:
+                status = 'limited'
         quality = {'status':status,'revisions':revisions,'layout':{'status':'web_checked'},
                    'note':('本报告有尚未完成的复核，请对照原材料阅读。' if limitations
                            else '结构及带证据定位的模型审稿通过，不等于现实事实得到独立证明。')}
@@ -341,8 +527,17 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
     for revision in range(max_revisions + 1):
         write_json(folder/'review-draft.json', original)
         write_json(folder/f'candidate-{revision}.json', candidate)
-        content = [{'id': code, 'section': path.rsplit('/',1)[0], 'text': locate(candidate,path)}
-                   for code, path in selected.items()]
+        content = [{'id': code, 'section': path if version == VERSION else path.rsplit('/',1)[0],
+                    'text': locate(candidate,path)} for code, path in selected.items()]
+        if version == VERSION:
+            # Preserve node grouping even though replacement targets are individual strings.
+            for field in content:
+                match = re.match(r'/reader/story/arc/(\d+)/', field['section'])
+                if match:
+                    step = candidate['reader']['story']['arc'][int(match[1])]
+                    field.update(order_basis=step['order_basis'], source_ids=step['source_ids'])
+                    if field['section'].endswith('/happened'):
+                        field['source_check'] = step['source_check']
         task = (RULES + '\n核对下列编号字段。只报告会误导读者的事实、时序、归因、身份或推测错误。'
                 '每条给出字段 id、在该字段中只出现一次的逐字 excerpt、用来替换该片段的 replacement、原因和逐字材料证据。'
                 '替换后应与前后文通顺并保留正确内容。允许删去无依据的片段。每个字段只给一条。'
@@ -354,10 +549,16 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
             task += ('\n成稿比较过这些读法，仍须回到原材料核对：'+dump(candidate['reading_choice'])+
                      '\n检查主线能否解释关键反应和转折；证据不对称时应说明分量。'
                      '仅在遗漏或误读会改变读者理解时，提出带依据的局部修改。')
-        if version == VERSION:
+        if version in TIMED_VERSIONS:
             task += ('\n'+CHRONOLOGY_RULE+
                      '优先核对标题、导语、现状和主线的事件时间、发言人、群聊场景、争议数字和结清范围。'
                      '相关前情若已被读法比较识别但正文漏掉，可补入现有前情节点或导语。')
+        if version == VERSION:
+            task += ('\n'+SOURCE_RULES+'\n争议对照摘录如下；各节点的 source_check 同样仅作线索，须回到材料核对：'
+                     +dump(candidate['disagreements'])+
+                     '\n先读标题、导语、完整事件线（逐节点检查事件与场景）、现状，再看行为判断。'
+                     '跨字段对照：同一数字或动机若有争议，不得在任何位置变成确定事实。'
+                     '优先处理改变主线或责任的少数问题。不要为口吻或轻微重复提出修改。')
         if retry_notes:
             task += '\n上轮核对未完成。重新检查这些字段，问题只写最必要的几条；校验反馈：'+dump(retry_notes)
         if pending:
@@ -401,11 +602,14 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
             container[int(key) if isinstance(container,list) else key] = value
             try:
                 next_candidate, next_report, _ = mechanical(
-                    edited,case,ids,compare=version in COMPARATIVE_VERSIONS,timed=version==VERSION)
+                    edited,case,ids,compare=version in COMPARATIVE_VERSIONS,
+                    timed=version in TIMED_VERSIONS,anchored=version==VERSION)
             except (ValueError, TypeError, KeyError) as exc:
                 rejected.append(str(exc))
                 pending.append(item)
                 continue
+            if version == VERSION and remove_headline_durations(next_candidate, next_report):
+                rejected.append('标题或副标题不得用估算或争议时长定调。')
             if next_candidate != candidate:
                 candidate, original = next_candidate, next_report
                 changed_paths.add(path)
@@ -420,7 +624,8 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
         seen.add(key)
         if single_revision:
             initial_limitations = rejected + [item['reason'] for item in pending]
-            selected = {code:path for code,path in fields.items() if path in changed_paths}
+            selected = (primary if version == VERSION else
+                        {code:path for code,path in fields.items() if path in changed_paths})
             continue
         if changed_paths and not rejected:
             retry_notes = []
@@ -460,9 +665,17 @@ def apply_patch(candidate,patch,issues):
     return result
 
 
-def mechanical(candidate,case,ids,*,compare=False,timed=False):
-    validate_schema(candidate, TIMED_OUTPUT if timed else COMPARATIVE_OUTPUT if compare else REPORT_OUTPUT)
+def derived_timeline(arc):
+    return [{'time_label':step['event_time'] or step['order_basis'],
+             'description':step['happened'], 'message_ids':step['source_ids']} for step in arc]
+
+
+def mechanical(candidate,case,ids,*,compare=False,timed=False,anchored=False):
+    schema = CHECKED_OUTPUT if anchored else TIMED_OUTPUT if timed else COMPARATIVE_OUTPUT if compare else REPORT_OUTPUT
+    validate_schema(candidate, schema)
     original=map_refs(candidate,{v:k for k,v in ids.items()})
+    if anchored:
+        disagreements = original.pop('disagreements')
     if compare:
         choice = original.pop('reading_choice')
         options = choice['options']
@@ -474,9 +687,12 @@ def mechanical(candidate,case,ids,*,compare=False,timed=False):
                or not item['source_ids'] or not set(item['source_ids']) <= ids.keys() for item in options):
             raise ValueError('每种读法需有解释、局限及可回查的材料。')
     if timed:
-        # Stable partition: background belongs ahead of the immediate sequence;
-        # preserve the chosen relative order within each group.
-        original['reader']['story']['arc'].sort(key=lambda step: step['phase'] != '前情')
+        arc = original['reader']['story']['arc']
+        # Put the background first without reordering other events.
+        arc.sort(key=lambda step: step['phase'] != '前情')
+    if anchored:
+        checks = [step.pop('source_check') for step in arc]
+        original['timeline'] = derived_timeline(arc)
     original['reader'],fixes=normalize_presentations(original['reader'],case['messages'])
     validate_report(original,case['messages'])
     # Byte/paragraph page preferences do not trigger paid prose rewriting.
@@ -492,6 +708,11 @@ def mechanical(candidate,case,ids,*,compare=False,timed=False):
     normalized = map_refs(original,ids)
     if compare:
         normalized['reading_choice'] = map_refs(choice,ids)
+    if anchored:
+        normalized['disagreements'] = map_refs(disagreements,ids)
+        for step, check in zip(normalized['reader']['story']['arc'], checks):
+            step['source_check'] = map_refs(check,ids)
+        del normalized['timeline']
     return normalized,original,fixes
 
 
@@ -576,14 +797,22 @@ def execute(case,folder,progress=lambda stage:None,*,version=VERSION):
     context=RULES+'\n材料（短编号与原记录一一对应，时间字段为消息时间）：'+dump(pack)
     if version in COMPARATIVE_VERSIONS:
         context = READING_RULES + '\n' + CONTEXT_RULE + '\n' + context
-    if version == VERSION:
+    if version in TIMED_VERSIONS:
         context = CHRONOLOGY_RULE + '\n' + context
-    candidate,original,fixes=checked_call(
-        'compose',
-        context+'\n生成全新的事件分析和完整阅读稿。除reader外的字段是简短后台参考，reader是读者正文。不要复用旧报告。最多6个核心判断；篇幅按材料缩小，可选引文、图片字段无内容时填空字符串。现状集中写最新状态和关键悬念，先前的误读与更正放在经过里。',
-        TIMED_OUTPUT if version == VERSION else COMPARATIVE_OUTPUT if version in COMPARATIVE_VERSIONS else REPORT_OUTPUT,
-        lambda value:mechanical(value,case,ids,compare=version in COMPARATIVE_VERSIONS,timed=version==VERSION),
-        tokens=POLICY['writer_tokens'])
+    if version == VERSION:
+        context = SOURCE_RULES + '\n' + context
+    output_schema = (CHECKED_OUTPUT if version == VERSION else TIMED_OUTPUT if version in TIMED_VERSIONS
+                     else COMPARATIVE_OUTPUT if version in COMPARATIVE_VERSIONS else REPORT_OUTPUT)
+    def check_draft(value):
+        return mechanical(value,case,ids,compare=version in COMPARATIVE_VERSIONS,
+                          timed=version in TIMED_VERSIONS,anchored=version==VERSION)
+
+    task = (context+'\n生成全新的事件分析和完整阅读稿。除reader外的字段是简短后台参考，reader是读者正文。不要复用旧报告。最多6个核心判断；篇幅按材料缩小，可选引文、图片字段无内容时填空字符串。现状集中写最新状态和关键悬念，先前的误读与更正放在经过里。')
+    if version == VERSION:
+        task += ('\n后台 events、claims 保留必要的索引和短句，勿重复正文论证。材料少时用一个事件、最多三个争点，'
+                 '正文两三段、人物两三项、无关支线留空。每个时间线节点内先填 source_check，再写 happened；'
+                 '按事件发生顺序输出，不把后来才展示的材料排成更晚发生的事件。')
+    candidate,original,fixes=checked_call('compose',task,output_schema,check_draft,tokens=POLICY['writer_tokens'])
     if version != PREVIOUS_VERSION:
         return review_numbered(case, folder, pack, ids, candidate, original, trace, call, version)
     previous=[];seen=set();audit_repairs=0
