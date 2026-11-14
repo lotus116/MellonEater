@@ -57,6 +57,18 @@ class EventSequenceTests(unittest.TestCase):
         self.assertEqual(result['quality']['status'],'limited')
         self.assertNotIn('source_check',arc[0])
         self.assertIn('公开披露',generate.call_args.args[0])
+        self.assertIn('第一次在一处公开贴出和后来补贴旧材料',generate.call_args.args[0])
+
+    def test_local_review_does_not_insert_already_stated_explanation(self):
+        draft = {'reader':{'lead':'她没有回应，但私信解释只是活跃一下气氛。'}}
+        edits = {'issues':[{'field_id':'F001','excerpt':'她没有回应',
+                            'replacement':'私信解释只是活跃一下气氛。',
+                            'evidence':[{'source_id':'S001','quote':'我就活跃一下气氛'}],
+                            'reason':'资料包含事后解释'}]}
+        pack = {'messages':[{'id':'S001','text':'我就活跃一下气氛'}],'image_observations':[]}
+        changes, rejected = compact.checked_edits(edits,{'F001':'/reader/lead'},draft,pack,contextual=True)
+        self.assertEqual(changes,[])
+        self.assertTrue(rejected)
 
     def test_only_inner_clock_governing_the_quote_is_allowed(self):
         row = node(1,'S001','先答应再谈','图内时间','昨天 21:25',medium='image',basis='时间戳可确认')

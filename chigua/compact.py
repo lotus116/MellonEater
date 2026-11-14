@@ -10,14 +10,16 @@ from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, ASSESSMENT_READER_SCHEMA, T
 from .checkpoints import CallFailure,digest
 from .editor import normalize_presentations
 
-VERSION='compact-v12'
+VERSION='compact-v13'
+ACTION_PREVIOUS_VERSION='compact-v12'
 ANCHORED_PREVIOUS_VERSION='compact-v11'
 TIMED_PREVIOUS_VERSION='compact-v9'
 COMPARATIVE_PREVIOUS_VERSION='compact-v8'
 SINGLE_REVISION_PREVIOUS_VERSION='compact-v7'
 NUMBERED_PREVIOUS_VERSION='compact-v6'
 PREVIOUS_VERSION='compact-v5'
-ANCHORED_VERSIONS={VERSION,ANCHORED_PREVIOUS_VERSION}
+ACTION_VERSIONS={VERSION,ACTION_PREVIOUS_VERSION}
+ANCHORED_VERSIONS=ACTION_VERSIONS | {ANCHORED_PREVIOUS_VERSION}
 TIMED_VERSIONS=ANCHORED_VERSIONS | {TIMED_PREVIOUS_VERSION}
 COMPARATIVE_VERSIONS=TIMED_VERSIONS | {COMPARATIVE_PREVIOUS_VERSION}
 SINGLE_REVISION_VERSIONS=COMPARATIVE_VERSIONS | {SINGLE_REVISION_PREVIOUS_VERSION}
@@ -64,6 +66,14 @@ CHRONOLOGY_RULE = (
     '压缩后台 events、timeline、claims 的重复内容，把篇幅留给主线和具体行为判断。'
 )
 SOURCE_RULES=(ROOT/'skills/chigua-analysis/references/source-checks.md').read_text()
+REVIEW_CROSSCHECK = (
+    '逐项比较时间线、导语、现状、详细经过和行为判断是否讲的是同一件事。'
+    '特别查某人第一次在一处公开贴出和后来补贴旧材料是否被合并；'
+    '核对原话实际在哪个群、哪一步才进入私聊。'
+    '区分表达不适、要求解释、责问三种行为；材料只显示不适时照实写。'
+    '对同一字段的多处错误给一条合并修改，读一遍完整字段再提交，避免修改后重复原句或语义断裂。'
+    '若同一误读出现在多个字段，指出每个影响读者理解的位置。'
+)
 SOURCE_QUOTE = schema_obj({
     'source_id':STR, 'quote':STR, 'from':{'type':'string','enum':['text','image']},
 })
@@ -300,7 +310,7 @@ def numbered_fields(candidate):
     return {f'F{index:03d}': path for index, path in enumerate(paths, 1)}
 
 
-def checked_edits(review, fields, candidate, pack, *, include_reasons=False):
+def checked_edits(review, fields, candidate, pack, *, include_reasons=False, contextual=False):
     """Independently check each proposed substitution against the saved draft."""
     changes, rejected = [], []
     used = set()
@@ -335,6 +345,10 @@ def checked_edits(review, fields, candidate, pack, *, include_reasons=False):
             reject('修改没有变化')
             continue
         updated = current.replace(excerpt, replacement, 1)
+        if contextual and len(replacement.strip()) >= 8 and (
+                updated.count(replacement) > 1 or re.search(r'[。！？][，、。]', updated)):
+            reject('局部替换与同一段原文重复或衔接不通')
+            continue
         changes.append((field, updated, item))
         used.add(field)
     return changes, rejected
@@ -484,10 +498,10 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
     if version in ANCHORED_VERSIONS:
         changes = remove_headline_durations(candidate, original)
         write_json(folder/'headline-normalization.json', changes)
-    if version == VERSION:
+    if version in ACTION_VERSIONS:
         event_sequence.normalize(candidate,pack)
     fields = numbered_fields(candidate)
-    if version == VERSION:
+    if version in ACTION_VERSIONS:
         # Time labels are generated from the anchor, not editable prose.
         fields = {code:path for code,path in fields.items() if not path.endswith('/event_time')}
     primary = primary_review_fields(fields)
@@ -504,8 +518,8 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
 
     def finish(status, revisions, limitations=()):
         if version in ANCHORED_VERSIONS:
-            source_limits, uncertain = source_check_limits(candidate, pack, actions=version==VERSION)
-            if version == VERSION:
+            source_limits, uncertain = source_check_limits(candidate, pack, actions=version in ACTION_VERSIONS)
+            if version in ACTION_VERSIONS:
                 time_limits, unsupported, bases, dated = event_sequence.normalize(candidate,pack)
                 source_limits.extend(time_limits)
                 for draft_step, step in zip(candidate['reader']['story']['arc'], original['reader']['story']['arc']):
@@ -515,12 +529,12 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
             for index in uncertain:
                 step = original['reader']['story']['arc'][index]
                 step.update(event_time='', order_basis='先后未确认')
-            if version != VERSION and order_supported_days(candidate,original,pack,uncertain):
+            if version not in ACTION_VERSIONS and order_supported_days(candidate,original,pack,uncertain):
                 original['reader']['story']['timeline_note'] += (
                     ' 可按材料核对的日期已排序；未给日期的跨场景动作，仅保留原文支持的相对顺序。')
                 source_limits.append('已校正相邻、有日期依据的节点顺序；跨场景的完整顺序仍需对照原文。')
             arc = original['reader']['story']['arc']
-            if version == VERSION:
+            if version in ACTION_VERSIONS:
                 if event_sequence.order_dated(arc, dated):
                     original['reader']['story']['timeline_note'] += ' 可核对日期的相邻节点已按日期调整。'
                 if any(not step['event_time'] for step in arc):
@@ -561,7 +575,7 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
                     field.update(order_basis=step['order_basis'], source_ids=step['source_ids'])
                     if field['section'].endswith('/happened'):
                         field['source_check'] = step['source_check']
-                        if version == VERSION:
+                        if version in ACTION_VERSIONS:
                             field.update(action=step['action_kind'], event_time=step['event_time'])
         task = (RULES + '\n核对下列编号字段。只报告会误导读者的事实、时序、归因、身份或推测错误。'
                 '每条给出字段 id、在该字段中只出现一次的逐字 excerpt、用来替换该片段的 replacement、原因和逐字材料证据。'
@@ -584,11 +598,13 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
                      '\n先读标题、导语、完整事件线（逐节点检查事件与场景）、现状，再看行为判断。'
                      '跨字段对照：同一数字或动机若有争议，不得在任何位置变成确定事实。'
                      '优先处理改变主线或责任的少数问题。不要为口吻或轻微重复提出修改。')
-        if version == VERSION:
+        if version in ACTION_VERSIONS:
             task += ('\n逐个核对已列动作的分类、时间归属及顺序。'
                      '后人补贴或回述旧话的时间只能用于描述补贴或回述本身。'
                      '若同一节点夹写其他场合的动作，优先保留与该节点分类相符的句子。'
                      '如仍有漏项、错序或日期缺少支撑，指出具体节点及材料；没有安全替换时 replacement 留原样，原因将作为局限。')
+        if version == VERSION:
+            task += '\n'+REVIEW_CROSSCHECK
         if retry_notes:
             task += '\n上轮核对未完成。重新检查这些字段，问题只写最必要的几条；校验反馈：'+dump(retry_notes)
         if pending:
@@ -612,7 +628,8 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
             history.append({'revision':revision,'unresolved':retry_notes})
             write_json(folder/'checks.json',history)
             continue
-        changes, rejected = checked_edits(review, selected, candidate, pack, include_reasons=single_revision)
+        changes, rejected = checked_edits(review, selected, candidate, pack, include_reasons=single_revision,
+                                          contextual=version==VERSION)
         pending = []
         history.append({'revision':revision,'review':review,'unresolved':rejected})
         write_json(folder/'checks.json',history)
@@ -634,8 +651,8 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
                 next_candidate, next_report, _ = mechanical(
                     edited,case,ids,compare=version in COMPARATIVE_VERSIONS,
                     timed=version in TIMED_VERSIONS,anchored=version in ANCHORED_VERSIONS,
-                    actions=version==VERSION)
-                if version == VERSION:
+                    actions=version in ACTION_VERSIONS)
+                if version in ACTION_VERSIONS:
                     event_sequence.normalize(next_candidate,pack)
             except (ValueError, TypeError, KeyError) as exc:
                 rejected.append(str(exc))
@@ -854,22 +871,22 @@ def execute(case,folder,progress=lambda stage:None,*,version=VERSION):
         context = CHRONOLOGY_RULE + '\n' + context
     if version in ANCHORED_VERSIONS:
         context = SOURCE_RULES + '\n' + context
-    if version == VERSION:
+    if version in ACTION_VERSIONS:
         context = event_sequence.RULES + '\n' + context
-    output_schema = (ACTION_OUTPUT if version == VERSION else CHECKED_OUTPUT if version in ANCHORED_VERSIONS
+    output_schema = (ACTION_OUTPUT if version in ACTION_VERSIONS else CHECKED_OUTPUT if version in ANCHORED_VERSIONS
                      else TIMED_OUTPUT if version in TIMED_VERSIONS
                      else COMPARATIVE_OUTPUT if version in COMPARATIVE_VERSIONS else REPORT_OUTPUT)
     def check_draft(value):
         return mechanical(value,case,ids,compare=version in COMPARATIVE_VERSIONS,
                           timed=version in TIMED_VERSIONS,anchored=version in ANCHORED_VERSIONS,
-                          actions=version==VERSION)
+                          actions=version in ACTION_VERSIONS)
 
     task = (context+'\n生成全新的事件分析和完整阅读稿。除reader外的字段是简短后台参考，reader是读者正文。不要复用旧报告。最多6个核心判断；篇幅按材料缩小，可选引文、图片字段无内容时填空字符串。现状集中写最新状态和关键悬念，先前的误读与更正放在经过里。')
     if version in ANCHORED_VERSIONS:
         task += ('\n后台 events、claims 保留必要的索引和短句，勿重复正文论证。材料少时用一个事件、最多三个争点，'
                  '正文两三段、人物两三项、无关支线留空。每个时间线节点内先填 source_check，再写 happened；'
                  '按事件发生顺序输出，不把后来才展示的材料排成更晚发生的事件。')
-    if version == VERSION:
+    if version in ACTION_VERSIONS:
         task += ('\n时间线只输出 story.actions。两套时间规则不一致时，以开头的动作分类和 time_origin 规则为准。'
                  '同在一条材料中的不同动作分别提取；四类动作若在材料里出现，留出四个独立节点，不要用一个节点概括。')
     candidate,original,fixes=checked_call('compose',task,output_schema,check_draft,tokens=POLICY['writer_tokens'])
