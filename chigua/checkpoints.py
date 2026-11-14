@@ -94,14 +94,14 @@ def _call_locked(prompt,schema,folder,stage,images,config,media,execute,recover=
     # A request interrupted after dispatch might already have been billed.
     if attempts:
         last=json.loads(attempts[-1].read_text())
-        if last.get('status')=='running' and recover:
+        if (last.get('status')=='running' or last.get('status')=='failed' and last.get('kind')=='invalid_output') and recover:
             try:recovered=recover(attempts[-1].parent)
             except (ValueError,KeyError,TypeError,OSError):recovered=None
             if recovered:
                 value,stats=recovered
                 stats={**stats,'cached':True,'checkpoint':key}
                 write_json(cache,{'key':key,'value':value,'checksum':digest(value),'stats':stats})
-                write_json(attempts[-1],{**last,'status':'completed','recovered_response':True,'ended_at':now()})
+                write_json(attempts[-1],{**last,'previous_status':last['status'],'status':'completed','recovered_response':True,'ended_at':now()})
                 return value,stats
         if (last.get('status')=='running' or last.get('uncertain')) and not policy.get('retry_uncertain'):
             raise CallFailure('上次请求中断，当前阶段是否已计费未知。确认后可仅重试这一步。',kind='interrupted',uncertain=True)

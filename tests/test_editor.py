@@ -98,6 +98,35 @@ class EditorTests(unittest.TestCase):
         result,gen=self.run_edit(iter([bad,plan(),candidate(),review()]))
         self.assertEqual(gen.call_args_list[1].args[3],'editor_plan_repair')
         self.assertEqual(result['quality']['status'],'passed')
+    def test_optional_quote_cleanup_preserves_narrative_and_requires_semantic_review(self):
+        bad=candidate();ch=bad['chapters'][0]
+        ch.update(quote_text='not in original',quote_source_id='M1',image_id='synthetic.png')
+        before=copy.deepcopy(bad)
+        result,gen=self.run_edit(iter([plan(),bad,review()]))
+        fixed=result['reader']['chapters'][0]
+        self.assertEqual(fixed['quote_text'],'');self.assertEqual(fixed['image_id'],'M1')
+        self.assertEqual(fixed['paragraphs'],before['chapters'][0]['paragraphs'])
+        self.assertEqual(bad,before)
+        self.assertEqual(gen.call_args_list[-1].args[3],'editor_review_0')
+        self.assertEqual(len(result['trace'][1]['local_presentation_repairs']),2)
+    def test_ambiguous_image_filename_is_not_guessed(self):
+        bad=candidate();bad['chapters'][0]['image_id']='synthetic.png'
+        messages=self.case['messages']+[{'id':'M2','text':'another','image':'synthetic.png'}]
+        fixed,repairs=editor.normalize_presentations(bad,messages)
+        self.assertEqual(fixed['chapters'][0]['image_id'],'synthetic.png')
+        self.assertFalse(any(r['rule']=='unique_exact_image_filename' for r in repairs))
+    def test_cast_roles_are_consistent_without_changing_citations_or_originals(self):
+        value=candidate();value['people']=[{'name':'队员Alex','role':'Alex发帖','source_ids':['M1']}]
+        value['lead']='Alex与队长沟通；队员Alex确认，Alexandra未参与。'
+        value['chapters'][0].update(quote_text='Alex确认',quote_source_id='M1')
+        before=copy.deepcopy(value)
+        fixed,repairs=editor.role_labels(value)
+        self.assertEqual(fixed['people'][0]['name'],'队员甲')
+        self.assertEqual(fixed['lead'],'队员甲与队长沟通；队员甲确认，Alexandra未参与。')
+        self.assertEqual(fixed['people'][0]['source_ids'],['M1'])
+        self.assertEqual(fixed['chapters'][0]['quote_text'],'')
+        self.assertEqual(value,before)
+        self.assertEqual(editor.role_labels(fixed)[1],[])
 
 
 if __name__=='__main__':unittest.main()

@@ -189,6 +189,26 @@ def validate_schema(value, schema, path='结果'):
         raise ValueError(f'{path} 不在允许的选项中。')
 
 
+def normalize_reference_ids(value, messages):
+    """Repair only one appended hex character after a complete ZIP message ID.
+
+    No fuzzy matching, missing-character completion, or prose edits. The exact
+    original 24-digit hash must already be present, and every repair is logged.
+    """
+    known={m['id'] for m in messages};repairs=[]
+    fields={'message_ids','support_ids','conflict_ids','source_ids','verdict_source_ids',
+            'image_id','quote_source_id'}
+    def visit(item,key='',path='$'):
+        if isinstance(item,dict):return {k:visit(v,k,path+'.'+k) for k,v in item.items()}
+        if isinstance(item,list):return [visit(v,key,f'{path}[{i}]') for i,v in enumerate(item)]
+        if isinstance(item,str) and key in fields and item not in known and re.fullmatch(r'Z[0-9a-f]{25}',item) and item[:-1] in known:
+            repairs.append({'path':path,'original':item,'normalized':item[:-1],
+                            'rule':'one_extra_hex_after_complete_zip_id'})
+            return item[:-1]
+        return item
+    return visit(value),repairs
+
+
 def validate_report(report, messages):
     validate_schema(report, REPORT_SCHEMA)
     ids = {m['id'] for m in messages}

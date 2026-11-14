@@ -32,6 +32,28 @@ def parse_json(text):
     return json.loads(text)
 
 
+def normalize_empty_presentation(value,schema,path='$'):
+    """Accept null only as empty optional image/quote presentation strings."""
+    repairs=[]
+    if not isinstance(schema,dict):return value,repairs
+    if isinstance(value,dict) and schema.get('type')=='object':
+        result={}
+        for key,item in value.items():
+            child=schema.get('properties',{}).get(key,{})
+            if item is None and key in {'image_id','image_caption','quote_text','quote_source_id'} and child.get('type')=='string':
+                result[key]='';repairs.append({'path':path+'.'+key,'original':None,'normalized':'','rule':'empty_optional_presentation'})
+            else:
+                result[key],nested=normalize_empty_presentation(item,child,path+'.'+key);repairs.extend(nested)
+        return result,repairs
+    if isinstance(value,list) and schema.get('type')=='array':
+        result=[]
+        for i,item in enumerate(value):
+            fixed,nested=normalize_empty_presentation(item,schema.get('items',{}),f'{path}[{i}]')
+            result.append(fixed);repairs.extend(nested)
+        return result,repairs
+    return value,repairs
+
+
 def codex_failure(stderr_path):
     """Expose an actionable category, never raw stderr or submitted material."""
     try:
@@ -93,10 +115,11 @@ def recover_response(schema,attempt,stage):
     raw=choice['message']['content']
     if not raw or not raw.strip():return None
     value=parse_json(raw) if schema else raw
+    value,repairs=normalize_empty_presentation(value,schema)
     if schema:validate_schema(value,schema)
     config=status()
     return value,{'provider':config['provider'],'model':config['model'],'seconds':0,
-        'usage':obj.get('usage'),'cost':None,'recovered_response':True}
+        'usage':obj.get('usage'),'cost':None,'recovered_response':True,'local_format_repairs':repairs}
 
 
 def _generate_once(prompt, schema, run_dir: Path, stage, images=()):
@@ -188,6 +211,7 @@ def _generate_once(prompt, schema, run_dir: Path, stage, images=()):
         (run_dir / f'{stage}.response.txt').write_text(raw, encoding='utf-8')
     write_json(run_dir/'usage.json',usage)
     value=parse_json(raw) if schema else raw
+    value,repairs=normalize_empty_presentation(value,schema)
     if schema:validate_schema(value,schema)
     return value, {'provider': config['provider'], 'model': config['model'],
-        'seconds': round(time.monotonic()-started, 2), 'usage': usage, 'cost': None}
+        'seconds': round(time.monotonic()-started, 2), 'usage': usage, 'cost': None,'local_format_repairs':repairs}

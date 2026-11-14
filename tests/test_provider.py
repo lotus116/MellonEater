@@ -7,7 +7,8 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
-from chigua.provider import generate, parse_json, config_identity
+from chigua.provider import generate, parse_json, config_identity, normalize_empty_presentation
+from chigua.core import READER_SCHEMA,validate_schema
 
 
 class Response(BytesIO):
@@ -44,6 +45,13 @@ class ProviderTests(unittest.TestCase):
         with patch.dict(os.environ,{'CHIGUA_DEEPSEEK_THINKING':'invalid'}),patch('urllib.request.urlopen') as http:
             with self.assertRaisesRegex(ValueError,'思考设置无效'):self.call('{"ok":true}')
             http.assert_not_called()
+    def test_only_empty_optional_presentation_fields_are_normalized(self):
+        value={'title':None,'chapters':[{'image_id':None,'image_caption':None,'quote_text':None,'quote_source_id':None,'paragraphs':None}]}
+        fixed,repairs=normalize_empty_presentation(value,READER_SCHEMA)
+        self.assertEqual(len(repairs),4);self.assertIsNone(fixed['title'])
+        self.assertIsNone(fixed['chapters'][0]['paragraphs']);self.assertEqual(fixed['chapters'][0]['image_id'],'')
+        self.assertIsNone(value['chapters'][0]['image_id'])
+        with self.assertRaises(ValueError):validate_schema(fixed,READER_SCHEMA)
     def test_blank_is_failure(self):
         with self.assertRaisesRegex(RuntimeError,'空内容'):self.call('   ')
     def test_truncated_is_failure(self):

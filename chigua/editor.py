@@ -3,11 +3,12 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from pathlib import Path
 from . import provider
 from .checkpoints import CallFailure
 from .core import (STR, STRS, STORY_SCHEMA, READER_SCHEMA, READER_RULES,
-                   schema_obj, validate_schema, validate_reader, write_json, now)
+                   schema_obj, validate_schema, validate_reader, write_json, now, normalize_reference_ids)
 
 VERSION='editorial-v2.0'
 MAX_REVISIONS=2
@@ -22,6 +23,73 @@ REVIEW_SCHEMA=schema_obj({
     'checks':schema_obj({name:{'type':'string','enum':['pass','revise']} for name in DIMENSIONS}),
     'issues':{'type':'array','items':schema_obj({'dimension':{'type':'string','enum':DIMENSIONS},
         'location':STR,'problem':STR,'source_ids':STRS,'fix':STR})}})
+
+
+def role_labels(reader):
+    """Replace names in the selected cast with stable role labels, not identities.
+
+    This does not anonymize original evidence or guarantee share-safe output.
+    """
+    reader=copy.deepcopy(reader);aliases={};changes=[]
+    if len(reader.get('people',[]))>4:return reader,changes
+    roles=r'(?:技术队员|发帖队员|其他队员|队员|队长|教授|老师|群成员|管理员|参与者)'
+    for person in reader.get('people',[]):
+        name=person.get('name','')
+        if not isinstance(name,str) or not name or re.fullmatch(roles+r'[甲乙丙丁戊己庚辛壬癸A-D1-4]?',name):continue
+        # Role-only Chinese labels and unparsed names are left for semantic
+        # review; do not infer whether an arbitrary Chinese string is a name.
+        if not re.search(r'[A-Za-z][A-Za-z .-]{2,}',name):continue
+        prefix=re.match('^('+roles+')',name)
+        label=(prefix.group(1) if prefix else '参与者')+'甲乙丙丁'[len(changes)]
+        aliases[name]=label
+        # A cast label such as “队员 + Latin display name” often appears without
+        # its role elsewhere. Match whole names, never arbitrary substrings.
+        for token in re.findall(r'[A-Za-z][A-Za-z .-]{2,}',name):
+            token=token.strip()
+            aliases[token]=label
+            for role in ['队员','技术队员']:aliases[role+token]=label
+        changes.append({'original':name,'normalized':label,'rule':'selected_cast_role_label'})
+    def replace(text):
+        if not aliases:return text
+        pattern='|'.join(re.escape(k) for k in sorted(aliases,key=len,reverse=True))
+        return re.sub(r'(?<![A-Za-z])(?:'+pattern+r')(?![A-Za-z])',lambda m:aliases[m.group()],text)
+    def visit(value,key=''):
+        if isinstance(value,dict):return {k:visit(v,k) for k,v in value.items()}
+        if isinstance(value,list):return [visit(v,key) for v in value]
+        if isinstance(value,str) and not (key.endswith('_ids') or key.endswith('_id') or key=='quote_text'):return replace(value)
+        return value
+    reader=visit(reader)
+    for ch in reader.get('chapters',[]):
+        quote=ch.get('quote_text','')
+        if isinstance(quote,str) and replace(quote)!=quote:
+            changes.append({'rule':'omit_identifying_pull_quote','original':quote})
+            ch.update(quote_text='',quote_speaker='',quote_source_id='')
+    return reader,changes
+
+
+def normalize_presentations(reader,messages):
+    """Bind exact image filenames and omit unverifiable decorative pull quotes.
+
+    Narrative, claims and original evidence remain unchanged and still require
+    semantic review. Never invent a quote or guess an ambiguous image binding.
+    """
+    reader=copy.deepcopy(reader);repairs=[];lookup={m['id']:m for m in messages}
+    compact=lambda s:re.sub(r'\s+','',s)
+    for index,ch in enumerate(reader.get('chapters',[])):
+        image=ch.get('image_id')
+        if image and image not in lookup:
+            candidates=[m['id'] for m in messages if m.get('image')==image]
+            if len(candidates)==1:
+                ch['image_id']=candidates[0]
+                repairs.append({'path':f'chapters[{index}].image_id','original':image,
+                                'normalized':candidates[0],'rule':'unique_exact_image_filename'})
+        quote=ch.get('quote_text');source=lookup.get(ch.get('quote_source_id'))
+        if isinstance(quote,str) and quote and (not source or compact(quote) not in compact(source['text'])):
+            repairs.append({'path':f'chapters[{index}]','rule':'omit_unverified_pull_quote',
+                            'original':{k:ch.get(k) for k in ['quote_text','quote_speaker','quote_source_id']}})
+            ch.update(quote_text='',quote_speaker='',quote_source_id='')
+    reader,name_repairs=role_labels(reader);repairs.extend(name_repairs)
+    return reader,repairs
 
 
 def validate_plan(plan,analysis,messages):
@@ -116,6 +184,15 @@ def edit_report(case,analysis,folder:Path,progress=None):
         if progress:progress(stage)
         prompt=context+'\n当前任务：'+instruction+'\n只输出以下 JSON 对象：\n'+json.dumps(schema,ensure_ascii=False)
         value,stats=provider.generate(prompt,schema,folder,stage,images)
+        value,repairs=normalize_reference_ids(value,messages)
+        if repairs:
+            stats={**stats,'local_reference_repairs':repairs}
+            write_json(folder/(stage+'.reference-repairs.json'),repairs)
+        if schema==READER_SCHEMA:
+            value,presentation_repairs=normalize_presentations(value,messages)
+            if presentation_repairs:
+                stats={**stats,'local_presentation_repairs':presentation_repairs}
+                write_json(folder/(stage+'.presentation-repairs.json'),presentation_repairs)
         trace.append({'stage':stage,**stats});write_json(folder/'trace.json',trace)
         write_json(folder/(stage+'.output.json'),value)
         return value

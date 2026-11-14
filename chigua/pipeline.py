@@ -5,7 +5,7 @@ import uuid
 import os
 import fcntl
 import copy
-from .core import DATA, REPORT_SCHEMA, DISCOVERY_SCHEMA, build_prompt, now, validate_report, write_json
+from .core import DATA, REPORT_SCHEMA, DISCOVERY_SCHEMA, build_prompt, now, validate_report, write_json, normalize_reference_ids
 from . import provider
 from .editor import edit_report, VERSION as EDITOR_VERSION
 from .core import RULES, READER_RULES
@@ -92,6 +92,10 @@ def run_pipeline(jid, case, method):
             prompt = build_prompt(case, stage, prior)
             if schema:prompt += '\n输出格式：\n'+json.dumps(schema, ensure_ascii=False)
             prior, stats = provider.generate(prompt, schema, folder, stage, images)
+            prior,repairs=normalize_reference_ids(prior,case['messages'])
+            if repairs:
+                stats={**stats,'local_reference_repairs':repairs}
+                write_json(folder/f'{stage}.reference-repairs.json',repairs)
             trace.append({'stage': stage, **stats})
             write_json(folder / f'{stage}.output.json', prior)
             write_json(folder/'analysis_trace.json',trace)

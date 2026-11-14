@@ -136,6 +136,16 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(usage['output_tokens'],12000)
         self.assertEqual(usage['reasoning_tokens'],12000)
         self.assertEqual(usage['unknown_usage_requests'],0)
+    def test_fixed_local_parser_recovers_failed_paid_response_without_network(self):
+        schema={'type':'object','properties':{'image_id':{'type':'string'}},'required':['image_id']}
+        obj={'choices':[{'finish_reason':'stop','message':{'content':'{"image_id":null}'}}],
+             'usage':{'prompt_tokens':10,'completion_tokens':5}}
+        with patch('chigua.provider.normalize_empty_presentation',side_effect=lambda v,s:(v,[])),patch('urllib.request.urlopen',return_value=Response(json.dumps(obj).encode())):
+            with self.assertRaises(ValueError):self.generate(schema=schema)
+        with patch.object(provider,'_generate_once') as gen:
+            value,stats=self.generate(schema=schema)
+            gen.assert_not_called();self.assertEqual(value,{'image_id':''});self.assertTrue(stats['recovered_response'])
+        self.assertEqual(usage_summary(self.folder)['requests'],1)
     def test_rotated_key_reuses_completed_result_and_never_stores_secret(self):
         with patch.object(provider,'_generate_once',return_value=({},STATS)) as gen:
             self.generate()
