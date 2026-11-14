@@ -11,6 +11,29 @@ from chigua.checkpoints import usage_summary
 from chigua.compact import VERSION
 
 BASE='http://127.0.0.1:8765'
+
+
+def stress_fixture():
+    """Keep the conflict legible inside a realistic volume of unrelated chat."""
+    sample = json.loads((ROOT/'data/samples/compact-conduct.json').read_text())
+    sample['title'] = '合成大样本：退款争议与活动通知'
+    for index in range(42):
+        sample['messages'].append({
+            'id': f'N{index+1}', 'speaker': f'志愿者{index%5+1}',
+            'timestamp': f'2026-11-14T09:{index:02d}:00+08:00',
+            'text': f'活动准备第{index+1}项已在共享清单登记。请负责现场签到的同学对照座位、材料和物资列表，届时以当天的场地通知为准。',
+        })
+    for index in range(15):
+        sample['messages'].append({
+            'id': f'I{index+1}', 'speaker': '场地联络人',
+            'timestamp': f'2026-11-14T10:{index:02d}:00+08:00',
+            'text': f'活动准备的第{index+1}张场地通知。', 'image_fixture': True,
+            'synthetic_image_lines': ['SYNTHETIC VENUE NOTICE', f'Checklist attachment {index+1:02d}',
+                                      'Workshop setup: chairs and registration desk.'],
+        })
+    return sample
+
+
 def api(path,body=None):
     headers={}
     if body is not None:headers={'Content-Type':'application/json','X-Chigua-Token':api('/api/config')['token']}
@@ -20,7 +43,7 @@ def api(path,body=None):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('sample',choices=['chronology','parallel','image','conduct'])
+    parser.add_argument('sample',choices=['chronology','parallel','image','conduct','stress'])
     parser.add_argument('--inject-local-failure',action='store_true')
     args=parser.parse_args()
     records=ROOT/'data/private/compact-eval';records.mkdir(parents=True,exist_ok=True)
@@ -30,19 +53,23 @@ def main():
     output=records/(VERSION+'-'+args.sample+'.json')
     if output.exists():raise SystemExit('This sample already has a recorded run; inspect it rather than re-pay automatically.')
     config=api('/api/config');assert config['model']['provider']=='deepseek' and config['model']['available']
-    fixture=json.loads((ROOT/'data/samples'/('compact-'+args.sample+'.json')).read_text())
+    fixture=stress_fixture() if args.sample=='stress' else json.loads((ROOT/'data/samples'/('compact-'+args.sample+'.json')).read_text())
     messages=fixture['messages']
-    if 'synthetic_image_lines' in fixture:
+    for message in messages:
+        if not message.pop('image_fixture',False):
+            continue
         from PIL import Image,ImageDraw
         im=Image.new('RGB',(850,300),'white');draw=ImageDraw.Draw(im)
-        for i,line in enumerate(fixture['synthetic_image_lines']):draw.text((24,20+53*i),line,font_size=29,fill='black')
+        lines = message.pop('synthetic_image_lines', None) or fixture['synthetic_image_lines']
+        for i,line in enumerate(lines):draw.text((24,20+53*i),line,font_size=29,fill='black')
         buf=io.BytesIO();im.save(buf,format='PNG')
         asset=api('/api/upload',{'name':'synthetic-notice.png','data':base64.b64encode(buf.getvalue()).decode()})
-        for m in messages:
-            if m.pop('image_fixture',False):m['image']=asset['image']
+        message['image']=asset['image']
     case=api('/api/cases',{'title':fixture['title'],'question':fixture['question'],'messages':messages,
                           'source_note':'完全虚构的流程验证材料；未展示的资料不可补造。'})
-    job=api('/api/analyze',{'case_id':case['id'],'method':'B1','max_requests':6,'max_total_tokens':min(16000,24000-spent)})
+    limits = {'max_requests':10,'max_total_tokens':42000} if args.sample=='stress' else {
+        'max_requests':6,'max_total_tokens':min(16000,24000-spent)}
+    job=api('/api/analyze',{'case_id':case['id'],'method':'B1',**limits})
     manifest={'sample':args.sample,'case_id':case['id'],'run_id':job['id'],
               'expected_private_oracle':fixture['expected_private_oracle'],'fault_injected':args.inject_local_failure}
     write_json(output,manifest)
@@ -55,7 +82,7 @@ def main():
         if job['status']!='running':
             if args.inject_local_failure and not injected_done and job['status']=='failed' and marker.is_dir() and 'compose.output.json' in job.get('error',''):
                 manifest['before_resume_usage']=job['usage'];write_json(output,manifest)
-                assert job['usage']['requests']==1
+                assert job['usage']['completed_requests']==job['usage']['requests']
                 marker.rmdir();job=api('/api/resume',{'job_id':job['id']});injected_done=True;continue
             break
         time.sleep(2)

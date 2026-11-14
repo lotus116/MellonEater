@@ -114,7 +114,18 @@ class Handler(BaseHTTPRequestHandler):
                 c=pipeline.load_case(safe_id(bits[2]))
                 return self.send(c,filename='case-evidence.json')
             if len(bits)==3 and bits[0]=='report':
-                rid=safe_id(bits[1]); run=get_run(rid); c=pipeline.load_case(run['case_id'])
+                rid=safe_id(bits[1])
+                if bits[2]=='draft':
+                    job = pipeline.get_job(rid)
+                    if not job.get('draft_available'):
+                        return self.send({'error':'暂无待复核稿。'},404)
+                    folder = DATA/'runs'/rid
+                    case = json.loads((folder/'input.json').read_text())
+                    draft = json.loads((folder/'editorial/review-draft.json').read_text())
+                    run = {'report':draft,'created_at':job['created_at'],'draft':True,
+                           'draft_reason':job.get('error','')}
+                    return self.send(report_html(case,run),ctype='text/html; charset=utf-8')
+                run=get_run(rid); c=pipeline.load_case(run['case_id'])
                 if bits[2]=='html':
                     return self.send(report_html(c,run),ctype='text/html; charset=utf-8')
                 if bits[2]=='json':
@@ -303,8 +314,10 @@ def reload_worker():
         # so later maintenance does not require exporting an in-memory key.
         owner=sys.modules.get('__main__')
         if owner and getattr(owner,'Handler',None) and owner.Handler.__module__=='__main__':
-            updated=importlib.reload(importlib.import_module('chigua.server')).Handler
-            owner.Handler.do_POST=updated.do_POST
+            updated=importlib.reload(importlib.import_module('chigua.server'))
+            updated.TOKEN=owner.TOKEN
+            owner.Handler.do_POST=updated.Handler.do_POST
+            owner.Handler.do_GET=updated.Handler.do_GET
         return {'workflow':pipeline.compact.VERSION,'status':'reloaded','model_requests':0}
     finally:fcntl.flock(fd,fcntl.LOCK_UN);os.close(fd)
 

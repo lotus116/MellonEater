@@ -9,7 +9,9 @@ from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, ASSESSMENT_READER_SCHEMA, s
 from .checkpoints import CallFailure,digest
 from .editor import normalize_presentations
 
-VERSION='compact-v5'
+VERSION='compact-v6'
+PREVIOUS_VERSION='compact-v5'
+SUPPORTED_VERSIONS={VERSION,PREVIOUS_VERSION}
 RULES=(ROOT/'skills/chigua-analysis/references/compact-workflow.md').read_text()
 REPORT_OUTPUT = schema_obj({**PUBLISHED_SCHEMA['properties'], 'reader': ASSESSMENT_READER_SCHEMA})
 POLICY={'writer_tokens':6000,'audit_tokens':4000,'patch_tokens':4000,'image_tokens':6000,
@@ -25,6 +27,11 @@ AUDIT_SCHEMA=schema_obj({'decision':{'type':'string','enum':['pass','revise']},
         'problem':STR,'requested_change':STR})}})
 PATCH_SCHEMA=schema_obj({'changes':{'type':'array','items':schema_obj({
     'path':STR,'expected_json':STR,'replacement_json':STR})}})
+REVIEW_SCHEMA = schema_obj({'issues': {'type': 'array', 'items': schema_obj({
+    'field_id': STR, 'excerpt': STR, 'replacement': STR,
+    'evidence': AUDIT_SCHEMA['properties']['issues']['items']['properties']['evidence'],
+    'reason': STR,
+})}})
 
 
 def dump(value):return json.dumps(value,ensure_ascii=False,separators=(',',':'))
@@ -79,32 +86,71 @@ def evidence_text(pack,sid):
     return '\n'.join(parts)
 
 
-def narrow_text_field(issue, candidate, value):
-    """Use an exact, unique quote within the cited paragraph or assessment."""
-    original_path = issue['path']
-    path = original_path
+def quoted_fields(value, path, quote):
+    """Search prose fields, leaving citation lists and internal IDs untouched."""
+    if isinstance(value, dict):
+        for field, child in value.items():
+            if field in {'id', 'event_id', 'kind', 'status', 'order_basis'} or field.endswith(('_id', '_ids')):
+                continue
+            yield from quoted_fields(child, f'{path}/{field}', quote)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from quoted_fields(child, f'{path}/{index}', quote)
+    elif isinstance(value, str) and quote in value:
+        yield path, value
+
+
+def resolve_audit_field(issue, candidate):
+    """Recover a misplaced exact quote within its declared report section."""
+    path = issue['path']
     quote = issue['candidate_excerpt']
-    if not quote.strip() or isinstance(value, str) and quote in value:
-        return value
-    assessment_fields = ('title', 'observation', 'judgment', 'inference', 'counterpoint')
-    if re.fullmatch(r'/reader/assessment/\d+/(?:'+'|'.join(assessment_fields)+')', path):
-        path = path.rsplit('/', 1)[0]
+    if not path.startswith('/') or path == '/' or not quote.strip():
+        raise ValueError('审稿缺少有效字段路径或候选原句。')
+
+    original_path = path
+    top = path.split('/')[1]
+    if top not in candidate and top in candidate.get('reader', {}):
+        path = '/reader' + path
+    try:
         value = locate(candidate, path)
-    if not isinstance(value, dict):
-        return value
-    if re.fullmatch(r'/reader/chapters/\d+/paragraphs/\d+', path):
-        fields = ('text',)
-    elif re.fullmatch(r'/reader/assessment/\d+', path):
-        fields = assessment_fields
+    except (KeyError, IndexError, TypeError, ValueError):
+        value = None
+
+    if isinstance(value, str) and quote in value or (
+            isinstance(value, list) and all(isinstance(item, str) for item in value) and quote in dump(value)):
+        if path != original_path:
+            issue['original_path'] = original_path
+            issue['path'] = path
+        return
+
+    # Search a cited item/paragraph first, then its containing section if the
+    # index or field is wrong. Never search the entire reader or across sections.
+    pieces = path.split('/')
+    if pieces[1] in {'claims', 'events', 'timeline'}:
+        section = '/' + pieces[1]
+    elif pieces[1] == 'reader' and len(pieces) > 2 and isinstance(candidate['reader'].get(pieces[2]), (list, dict)):
+        section = '/reader/' + pieces[2]
     else:
-        return value
-    matched = [field for field in fields if isinstance(value.get(field), str) and quote in value[field]]
-    if len(matched) != 1:
-        return value
-    field = matched[0]
-    issue.setdefault('original_path', original_path)
-    issue['path'] = path + '/' + field
-    return value[field]
+        section = None
+    scope = path if isinstance(value, (list, dict)) else path.rsplit('/', 1)[0]
+    if section and len(quote.strip()) >= 4:
+        scopes = [scope] if scope == section or scope.startswith(section + '/') else []
+        if section not in scopes and len(quote.strip()) >= 8:
+            scopes.append(section)
+        for target in scopes:
+            try:
+                matches = list(quoted_fields(locate(candidate, target), target, quote))
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+            if len(matches) > 1:
+                break
+            if matches:
+                issue['original_path'] = original_path
+                issue['path'] = matches[0][0]
+                return
+    if isinstance(value, (dict, list)):
+        raise ValueError('审稿定位范围过大，必须指出具体文字或引用字段，不能授权整篇重写。')
+    raise ValueError('审稿所指原句不在对应字段中，停止采用未经定位的意见。')
 
 
 def audit_issues(audit,candidate,pack):
@@ -115,26 +161,9 @@ def audit_issues(audit,candidate,pack):
         # them as unverified advisory notes; only blocking issues need anchors.
         if issue['severity']=='suggestion':continue
         issue=copy.deepcopy(issue)
-        # Some JSON-mode models omit the reader wrapper. Repair only a known,
-        # uniquely resolvable reader field with the exact quoted candidate text.
-        # Never guess indices, fuzzy-match quotes, or change the source evidence.
-        path=issue['path']
-        if isinstance(path,str) and path.startswith('/') and path.split('/')[1] not in candidate:
-            try:
-                located=locate(candidate,'/reader'+path)
-                quoted=located if isinstance(located,str) else dump(located)
-                if issue['candidate_excerpt'].strip() and issue['candidate_excerpt'] in quoted:
-                    issue['original_path']=path;issue['path']='/reader'+path
-            except (ValueError,KeyError,TypeError,IndexError):pass
         if not issue['key'] or issue['key'] in seen:raise ValueError('审稿问题编号缺失或重复。')
         seen.add(issue['key'])
-        value=locate(candidate,issue['path'])
-        value=narrow_text_field(issue,candidate,value)
-        if isinstance(value,dict) or isinstance(value,list) and any(isinstance(x,(list,dict)) for x in value):
-            raise ValueError('审稿定位范围过大，必须指出具体文字或引用字段，不能授权整篇重写。')
-        text=value if isinstance(value,str) else dump(value)
-        if not issue['candidate_excerpt'].strip() or issue['candidate_excerpt'] not in text:
-            raise ValueError('审稿所指原句不在对应字段中，停止采用未经定位的意见。')
+        resolve_audit_field(issue, candidate)
         if any(s not in ids for s in issue['source_ids']):raise ValueError('审稿引用了未知材料。')
         if issue['severity']=='blocking':
             if not issue['problem'].strip() or not issue['requested_change'].strip():raise ValueError('审稿未说明可执行的修正。')
@@ -168,6 +197,145 @@ def can_recover_audit(folder, stage):
     except (OSError, ValueError):
         pass
     return False
+
+
+def audit_retry_reason(path, audit, current_error):
+    """Keep an existing retry's prompt stable when replaying the same audit."""
+    try:
+        saved = json.loads(path.read_text())
+        if saved['original_audit'] == audit and isinstance(saved['error'], str):
+            return saved['error']
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    reason = str(current_error)
+    write_json(path, {'error': reason, 'original_audit': audit})
+    return reason
+
+
+def numbered_fields(candidate):
+    paths = sorted(path for path, value in quoted_fields(candidate, '', '')
+                   if value.strip() and not path.endswith('/quote_text'))
+    return {f'F{index:03d}': path for index, path in enumerate(paths, 1)}
+
+
+def checked_edits(review, fields, candidate, pack):
+    """Independently check each proposed substitution against the saved draft."""
+    changes, rejected = [], []
+    used = set()
+    cited = {citation['source_id'] for item in review['issues'] for citation in item['evidence']}
+    evidence = {row['id']: evidence_text(pack,row['id']) for row in pack['messages'] if row['id'] in cited}
+    for item in review['issues']:
+        field = fields.get(item['field_id'])
+        excerpt = item['excerpt']
+        replacement = item['replacement']
+        if field is None or field in used:
+            rejected.append('字段编号未知或重复')
+            continue
+        current = locate(candidate, field)
+        if not excerpt.strip() or current.count(excerpt) != 1:
+            rejected.append('候选原句缺失或不唯一')
+            continue
+        if not item['reason'].strip() or not item['evidence'] or any(
+            not citation['quote'].strip()
+            or citation['quote'] not in evidence.get(citation['source_id'], '')
+            for citation in item['evidence']
+        ):
+            rejected.append('意见缺少可逐字核对的证据')
+            continue
+        if not replacement.strip() and excerpt == current:
+            rejected.append('完整字段不能留空，需改为有依据的表述')
+            continue
+        if replacement == excerpt:
+            rejected.append('修改没有变化')
+            continue
+        updated = current.replace(excerpt, replacement, 1)
+        changes.append((field, updated, item))
+        used.add(field)
+    return changes, rejected
+
+
+def review_numbered(case, folder, pack, ids, candidate, original, trace, call):
+    """Review a numbered draft, apply verified edits, and check the result."""
+    from .report import reader_html
+
+    fields = numbered_fields(candidate)
+    write_json(folder/'review-fields.json', fields)
+    history = []
+    seen = {digest(candidate)}
+    selected = fields
+    retry_notes = []
+    pending = []
+    for revision in range(POLICY['max_revisions'] + 1):
+        write_json(folder/'review-draft.json', original)
+        write_json(folder/f'candidate-{revision}.json', candidate)
+        content = [{'id': code, 'section': path.rsplit('/',1)[0], 'text': locate(candidate,path)}
+                   for code, path in selected.items()]
+        task = (RULES + '\n核对下列编号字段。只报告会误导读者的事实、时序、归因、身份或推测错误。'
+                '每条给出字段 id、在该字段中只出现一次的逐字 excerpt、用来替换该片段的 replacement、原因和逐字材料证据。'
+                '替换后应与前后文通顺并保留正确内容。允许删去无依据的片段。每个字段只给一条。'
+                '可接受的表述直接保留，没有实质问题时 issues 为空。不要猜测图中未识别的内容。'
+                '\n材料：'+dump(pack)+'\n字段：'+dump(content))
+        if retry_notes:
+            task += '\n上轮核对未完成。重新检查这些字段，问题只写最必要的几条；校验反馈：'+dump(retry_notes)
+        if pending:
+            task += '\n上轮已定位、尚未应用的问题：'+dump(pending)
+        try:
+            review = call(f'numbered_review_{revision}',task,REVIEW_SCHEMA,
+                          tokens=POLICY['audit_tokens'])
+        except CallFailure as exc:
+            if exc.kind not in {'invalid_output','output_length'}:
+                raise
+            retry_notes = [str(exc)]
+            history.append({'revision':revision,'unresolved':retry_notes})
+            write_json(folder/'checks.json',history)
+            continue
+        changes, rejected = checked_edits(review, selected, candidate, pack)
+        pending = []
+        history.append({'revision':revision,'review':review,'unresolved':rejected})
+        write_json(folder/'checks.json',history)
+        if not review['issues']:
+            reader_html(case,{'report':original,'created_at':now()})
+            result = {'report':original,'trace':trace,'workflow_version':VERSION,
+                      'quality':{'status':'passed','revisions':revision,'layout':{'status':'web_checked'},
+                                 'note':'结构及带证据定位的模型审稿通过，不等于现实事实得到独立证明。'}}
+            write_json(folder/'accepted.json',result)
+            return result
+        if revision == POLICY['max_revisions']:
+            break
+        changed_paths = set()
+        for path, value, item in changes:
+            edited = copy.deepcopy(candidate)
+            parent, key = path.rsplit('/',1)
+            container = locate(edited, parent) if parent else edited
+            container[int(key) if isinstance(container,list) else key] = value
+            try:
+                next_candidate, next_report, _ = mechanical(edited,case,ids)
+            except (ValueError, TypeError, KeyError) as exc:
+                rejected.append(str(exc))
+                pending.append(item)
+                continue
+            if next_candidate != candidate:
+                candidate, original = next_candidate, next_report
+                changed_paths.add(path)
+        key = digest(candidate)
+        if changed_paths and key in seen:
+            rejected.append('修改回到了先前草稿')
+        seen.add(key)
+        if changed_paths and not rejected:
+            retry_notes = []
+            # Only the changed fields are up for review. Keep the full text
+            # evidence so a citation for one clause does not erase context.
+            selected = {code:path for code,path in fields.items() if path in changed_paths}
+            continue
+        retry_notes = rejected or ['修改未产生有效变化']
+        selected = fields
+
+    failure = CallFailure('正文已保存为待复核稿。审稿还有问题需要核对。',kind='review_invalid')
+    last = history[-1]
+    failure.diagnostics = [{'problem':reason} for reason in last['unresolved']]
+    failure.diagnostics.extend({'problem':item['reason'],'path':fields.get(item['field_id'],'')}
+                               for item in last.get('review',{}).get('issues',[]))
+    raise failure
 
 
 def apply_patch(candidate,patch,issues):
@@ -236,7 +404,7 @@ def revision_audit_task(pack, candidate, previous):
             '\n相关材料：'+dump(pack)+'\n先前问题：'+dump(previous)+'\n修改后的字段：'+dump(changes))
 
 
-def execute(case,folder,progress=lambda stage:None):
+def execute(case,folder,progress=lambda stage:None,*,version=VERSION):
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
     pack,ids,assets=prepare(case);trace=[];history=[]
     write_json(folder/'source-map.json',{v:k for k,v in ids.items()})
@@ -292,6 +460,8 @@ def execute(case,folder,progress=lambda stage:None):
         'compose',
         context+'\n生成全新的事件分析和完整阅读稿。除reader外的字段是简短后台参考，reader是读者正文。不要复用旧报告。最多6个核心判断；篇幅按材料缩小，可选引文、图片字段无内容时填空字符串。现状集中写最新状态和关键悬念，先前的误读与更正放在经过里。',
         REPORT_OUTPUT,lambda value:mechanical(value,case,ids),tokens=POLICY['writer_tokens'])
+    if version == VERSION:
+        return review_numbered(case, folder, pack, ids, candidate, original, trace, call)
     previous=[];seen=set();audit_repairs=0
     for revision in range(POLICY['max_revisions']+1):
         key=digest(candidate)
@@ -318,12 +488,12 @@ def execute(case,folder,progress=lambda stage:None):
             if audit_repairs:
                 raise CallFailure('审稿意见仍无法与原文对应，已停止；没有重写正文：'+str(exc),kind='review_invalid') from None
             audit_repairs+=1
-            write_json(folder/f'audit-{revision}-contract-error.json',{'error':str(exc),'original_audit':audit})
+            reason = audit_retry_reason(folder/f'audit-{revision}-contract-error.json', audit, exc)
             try:
                 corrected=call(f'audit_contract_fix_{revision}',
                     review_task+'\n重新完成上面的审稿。上次意见未通过本地校验或输出不完整。'
                     '即使上次意见为空，也要按原材料逐项核对；保留能定位的正确问题。'
-                    '\n失败原因：'+str(exc)+'\n原审稿（仅供参考）：'+dump(audit),
+                    '\n失败原因：'+reason+'\n原审稿（仅供参考）：'+dump(audit),
                     AUDIT_SCHEMA,images=review_images,thinking='disabled',tokens=POLICY['audit_tokens'])
                 blocking=audit_issues(corrected,candidate,review_pack)
                 if previous and {i['path'] for i in blocking} - {i['path'] for i in previous}:
@@ -337,7 +507,7 @@ def execute(case,folder,progress=lambda stage:None):
         if not blocking:
             from .report import reader_html
             reader_html(case,{'report':original,'created_at':now()})
-            result={'report':original,'trace':trace,'workflow_version':VERSION,
+            result={'report':original,'trace':trace,'workflow_version':version,
                     'quality':{'status':'passed','revisions':revision,'layout':{'status':'web_checked'},
                                'note':'结构及带证据定位的模型审稿通过，不等于现实事实得到独立证明。'}}
             write_json(folder/'accepted.json',result);return result

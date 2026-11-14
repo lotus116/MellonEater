@@ -58,6 +58,19 @@ class ServerTests(unittest.TestCase):
         with patch.object(pipeline.provider,'generate') as gen:
             code,job=self.request('/api/jobs/stopped');self.assertEqual(code,200);self.assertEqual(job['status'],'failed');gen.assert_not_called()
 
+    def test_draft_has_an_explicit_label_and_is_excluded_from_completed_reports(self):
+        from test_compact import composed
+        case = {'messages':core.normalize_messages([{'id':'S001','text':'我付了钱'}])}
+        folder = self.root/'runs'/'stopped'
+        core.write_json(folder/'job.json',{'id':'stopped','case_id':'synthetic','status':'failed',
+                                          'created_at':'2026-11-14T00:00:00Z','error':'有待复核的意见'})
+        core.write_json(folder/'input.json',case)
+        core.write_json(folder/'editorial/review-draft.json',composed())
+        with urllib.request.urlopen(self.base+'/report/stopped/draft') as res:
+            self.assertIn('待复核稿',res.read().decode())
+        self.assertEqual(self.request('/report/stopped/html')[0],404)
+        self.assertEqual(pipeline.list_runs('synthetic'),[])
+
     def test_cross_origin_and_missing_token_rejected(self):
         payload={'title':'x','text':'x'}
         self.assertEqual(self.request('/api/cases',payload,token=False)[0],403)

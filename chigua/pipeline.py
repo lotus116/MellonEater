@@ -35,9 +35,10 @@ def selected_workflow(method,workflow=None):
 
 def signature(case,method,workflow=None):
     images=list(dict.fromkeys(m['image'] for m in case['messages'] if m.get('image')))
-    if selected_workflow(method,workflow)==compact.VERSION:
+    workflow = selected_workflow(method,workflow)
+    if workflow in compact.SUPPORTED_VERSIONS:
         return digest({'case':case,'method':method,'media':media_hashes(images,DATA),
-            'config':provider.config_identity(),'workflow':compact.VERSION,'rules':compact.RULES,'policy':compact.POLICY})
+            'config':provider.config_identity(),'workflow':workflow,'rules':compact.RULES,'policy':compact.POLICY})
     return digest({'case':case,'method':method,'media':media_hashes(images,DATA),
         'config':provider.config_identity(),'workflow':WORKFLOW_VERSION,'editor':EDITOR_VERSION,
         'rules':RULES,'reader_rules':READER_RULES})
@@ -72,11 +73,13 @@ def get_job(jid):
             if history:
                 last=history[-1];job['diagnostics']=(last.get('review') or {}).get('issues',[])+[{'problem':x} for x in last.get('issues',[])]
     job['can_resume']=job.get('error_kind') not in ['editorial_exhausted','review_invalid','structure','visual_mapping','workflow_changed','cache','output_length']
-    if (job['status']=='failed' and job.get('workflow')==compact.VERSION
+    if job['status'] in {'failed','interrupted'} and (folder/'editorial/review-draft.json').is_file():
+        job['draft_available'] = True
+    if (job['status']=='failed' and job.get('workflow')==compact.PREVIOUS_VERSION
             and job.get('error_kind')=='review_invalid'
             and compact.can_recover_audit(folder/'editorial',job.get('stage',''))):
         job['can_resume']=True
-        job['error']='已恢复审稿意见中的段落定位。可以从已保存的步骤继续局部修改和复核。'
+        job['error']='已从逐字引文恢复审稿定位。可以从已保存的步骤继续局部修改和复核。'
     return job
 
 
@@ -104,12 +107,13 @@ def run_pipeline(jid, case, method):
     folder.mkdir(parents=True, exist_ok=True,mode=0o700)
     if not (folder/'input.json').exists():write_json(folder / 'input.json', case)
     try:
-        if job.get('workflow','').startswith('compact-') and job['workflow']!=compact.VERSION:
+        workflow = job.get('workflow','')
+        if workflow.startswith('compact-') and workflow not in compact.SUPPORTED_VERSIONS:
             raise CallFailure('流程版本已更新，旧任务不混用新步骤；原结果保留，未发出请求。',kind='workflow_changed')
-        if job.get('workflow')==compact.VERSION:
+        if workflow in compact.SUPPORTED_VERSIONS:
             def progress(stage):
                 job.update(stage=stage,phase='editing',step=0,total=0);persist(job)
-            edition=compact.execute(case,folder/'editorial',progress)
+            edition=compact.execute(case,folder/'editorial',progress,version=workflow)
             run={'id':jid,'case_id':case['id'],'method':method,'created_at':now(),
                 'origin':'live_model','input_hash':case['input_hash'],'identity':case.get('identity','旁观者'),
                 'report':edition['report'],'checks':validate_report(edition['report'],case['messages']),

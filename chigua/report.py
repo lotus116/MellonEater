@@ -162,6 +162,7 @@ def reader_html(case,run):
     parts=['<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
       '<link rel="icon" href="data:,"><title>'+escape(r['title'])+'</title><style>'+css+'</style><main id="top">',
       '<header class="masthead"><span>知瓜 <small>约 '+str(minutes)+' 分钟</small></span><button id="print-report" type="button" hidden>打印 / 存为 PDF</button></header>',
+      ('<aside class="draft-notice"><strong>待复核稿</strong>'+p(run.get('draft_reason') or '审稿尚未完成，请核对文中判断。')+'</aside>' if run.get('draft') else ''),
       '<div class="opening"><h1>'+escape(r['title'])+'</h1><p class="lead">'+escape(r['lead'])+'</p></div>',
       '<section class="now" id="now"><small>目前进展</small><h2>'+escape(r['verdict_title'])+'</h2>',p(r['verdict']),refs(r['verdict_source_ids']),'</section>',
       '<nav class="reader-nav" aria-label="阅读导航">'+('<a href="#turns">关键转折</a>' if r.get('story') else '')+

@@ -27,7 +27,7 @@ class CompactTests(unittest.TestCase):
     def run_flow(self,outputs):
         def gen(*args,**kwargs):return copy.deepcopy(next(outputs)),{'model':'test','seconds':0}
         with patch.object(provider,'generate',side_effect=gen) as calls:
-            result=compact.execute(self.case,self.folder)
+            result=compact.execute(self.case,self.folder,version=compact.PREVIOUS_VERSION)
         return result,calls
     def test_text_report_is_new_compose_and_audit_with_lossless_refs(self):
         result,calls=self.run_flow(iter([composed(),{'decision':'pass','issues':[]}]))
@@ -45,7 +45,7 @@ class CompactTests(unittest.TestCase):
     def test_truncated_audit_is_repaired_without_rewriting_compose(self):
         outputs=[(composed(),{}),CallFailure('截断',kind='output_length'),({'decision':'pass','issues':[]},{})]
         with patch.object(provider,'generate',side_effect=outputs) as calls:
-            result=compact.execute(self.case,self.folder)
+            result=compact.execute(self.case,self.folder,version=compact.PREVIOUS_VERSION)
         self.assertEqual(result['quality']['status'],'passed')
         self.assertEqual([c.args[3] for c in calls.call_args_list],['compose','audit_0','audit_contract_fix_0'])
         self.assertEqual(calls.call_args_list[-1].kwargs['options']['thinking'],'disabled')
@@ -80,7 +80,7 @@ class CompactTests(unittest.TestCase):
     def test_invented_critique_is_not_paid_rewrite(self):
         bad=issue();bad['evidence'][0]['quote']='not present'
         with patch.object(provider,'generate',side_effect=[(composed(),{}),({'decision':'revise','issues':[bad]}, {}),({'decision':'revise','issues':[bad]}, {})]) as gen:
-            with self.assertRaises(CallFailure) as error:compact.execute(self.case,self.folder)
+            with self.assertRaises(CallFailure) as error:compact.execute(self.case,self.folder,version=compact.PREVIOUS_VERSION)
         self.assertEqual(error.exception.kind,'review_invalid');self.assertEqual(gen.call_count,3)
         self.assertEqual(gen.call_args_list[-1].args[3],'audit_contract_fix_0')
         self.assertFalse((self.folder/'accepted.json').exists())
@@ -92,6 +92,55 @@ class CompactTests(unittest.TestCase):
         pack,_,_=compact.prepare(self.case);broad=issue();broad['path']='/reader'
         with self.assertRaisesRegex(ValueError,'范围过大'):
             compact.audit_issues({'decision':'revise','issues':[broad]},composed(),pack)
+    def test_misplaced_audit_quote_resolves_only_to_a_unique_field_in_its_section(self):
+        pack, _, _ = compact.prepare(self.case)
+        draft = composed()
+        draft['claims'][0]['source_note'] = '甲称跨行转账已经完成'
+        for path in ['/claims', '/claims/99/statement', '/claims/0/statement']:
+            with self.subTest(path=path):
+                review = {**issue(), 'path': path, 'candidate_excerpt': '甲称跨行转账已经完成'}
+                audit = {'decision': 'revise', 'issues': [review]}
+                self.assertEqual(compact.audit_issues(audit, draft, pack)[0]['path'], '/claims/0/source_note')
+        review['path'] = '/events/0/summary'
+        with self.assertRaisesRegex(ValueError,'原句不在'):
+            compact.audit_issues(audit, draft, pack)
+        draft['claims'][0]['reason'] = draft['claims'][0]['source_note']
+        review['path'] = '/claims'
+        with self.assertRaisesRegex(ValueError,'范围过大'):
+            compact.audit_issues(audit, draft, pack)
+
+    def test_saved_audit_retry_reason_keeps_request_stable_after_validator_changes(self):
+        path = self.folder/'audit-0-contract-error.json'
+        audit = {'decision': 'revise', 'issues': [issue()]}
+        self.assertEqual(compact.audit_retry_reason(path, audit, '初次错误'), '初次错误')
+        self.assertEqual(compact.audit_retry_reason(path, audit, '校验改进后的错误'), '初次错误')
+        self.assertEqual(compact.audit_retry_reason(path, None, '另一份审稿'), '另一份审稿')
+
+    def test_numbered_review_keeps_good_edits_when_another_field_is_invalid(self):
+        draft = composed()
+        fields = compact.numbered_fields(draft)
+        code = next(code for code, path in fields.items() if path == '/reader/verdict')
+        good = {'field_id':code,'excerpt':'仍需核对。','replacement':'甲称已付款，需补凭证。',
+                'evidence':[{'source_id':'S001','quote':'我付了钱'}],'reason':'明确是谁的说法'}
+        bad = {**good,'field_id':'invented'}
+        with patch.object(provider,'generate',side_effect=[
+            (draft,{}),({'issues':[bad,good]},{}),({'issues':[]},{}),
+        ]) as calls:
+            result = compact.execute(self.case,self.folder)
+        self.assertEqual(result['report']['reader']['verdict'],good['replacement'])
+        self.assertEqual(result['quality']['status'],'passed')
+        self.assertEqual(calls.call_count,3)
+        self.assertIn('字段编号未知或重复',calls.call_args.args[0])
+
+    def test_unresolved_numbered_review_leaves_readable_draft(self):
+        draft = composed()
+        invalid = {'field_id':'invented','excerpt':'未知','replacement':'改写','reason':'无法定位','evidence':[]}
+        with patch.object(provider,'generate',side_effect=[(draft,{})]+[({'issues':[invalid]}, {})]*3):
+            with self.assertRaises(CallFailure) as error:
+                compact.execute(self.case,self.folder)
+        self.assertEqual(error.exception.kind,'review_invalid')
+        self.assertTrue((self.folder/'review-draft.json').exists())
+        self.assertFalse((self.folder/'accepted.json').exists())
     def test_exact_paragraph_quote_narrows_patch_to_text_and_keeps_evidence(self):
         pack,_,_=compact.prepare(self.case)
         draft=composed()
