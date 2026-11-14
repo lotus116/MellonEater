@@ -112,6 +112,26 @@ class ReaderTests(unittest.TestCase):
         rows=normalize_messages([{'id':'A','source_name':'container','children':[
             {'id':'B','text':'b','source_name':'override'}, {'id':'C','text':'c'}]}])
         self.assertEqual(rows[2]['source_name'],'container')
+    def test_appendix_attachment_labels_stay_with_images(self):
+        from PIL import Image
+        from pypdf import PdfReader
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);(root/'uploads').mkdir()
+            Image.new('RGB',(400,1000),'blue').save(root/'uploads'/'tall.png')
+            rows=normalize_messages([{'id':f'I{i}','text':f'[图片] synthetic-{i}.png',
+                'speaker':f'图片{i}','image':'tall.png'} for i in range(3)])
+            r=reader();r['chapters'][0]['quote_text']=''
+            r['chapters'][0]['quote_source_id']=''
+            r['chapters'][0]['paragraphs'][0]['source_ids']=[m['id'] for m in rows]
+            r['verdict_source_ids']=['I0']
+            with patch.object(report,'DATA',root):
+                report.reader_pdf({'messages':rows},{'report':{'reader':r},
+                    'created_at':'2026-11-14T00:00:00Z'},root/'report.pdf')
+            pdf=PdfReader(root/'report.pdf')
+            for i in range(3):
+                pages=[page for page in pdf.pages if f'synthetic-{i}.png' in page.extract_text()]
+                self.assertEqual(len(pages),1)
+                self.assertEqual(len(pages[0].images),1)
     def test_ocr_timeout_preserves_image_workflow(self):
         import subprocess
         with patch('pathlib.Path.exists',return_value=True),patch.object(mac.subprocess,'run',side_effect=subprocess.TimeoutExpired('ocr',90)):

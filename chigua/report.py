@@ -294,8 +294,8 @@ def reader_pdf(case,run,path,*,include_sources=True):
         arc_body=ParagraphStyle('ArcBody',parent=body,fontSize=10.8,leading=18,spaceAfter=5)
         rows=[]
         for index,step in enumerate(spine['arc'],1):
-            rows.append([[p(str(index)+' / '+step['stage'],arc_label),p(step['order_basis'],small),references(step['source_ids'],'')],
-                         [p(step['happened'],arc_body),p('变化：'+step['changed'],small)]])
+            rows.append([[p(str(index)+' / '+step['stage'],arc_label),p(step['order_basis'],small)],
+                         [p(step['happened'],arc_body),p('变化：'+step['changed'],small),references(step['source_ids'],'')]])
         table=Table(rows,colWidths=[116,379],hAlign='LEFT')
         table.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'TOP'),
             ('LINEBELOW',(0,0),(-1,-2),.5,colors.HexColor('#dfe4ed')),
@@ -337,19 +337,26 @@ def reader_pdf(case,run,path,*,include_sources=True):
         source_body=ParagraphStyle('SourceBody',parent=body,fontSize=11,leading=19,spaceAfter=0)
         source_time=ParagraphStyle('SourceTime',parent=small,keepWithNext=True)
         for m in sources:
+            entry=[]
             label=labels[m['id']]
-            story.append(Paragraph(f'<a name="source-{label}"/>'+escape(label+' · '+m['speaker']),source_heading))
-            story.append(p(local_time(m.get('timestamp') or '原始时间未知'),source_time))
+            entry.append(Paragraph(f'<a name="source-{label}"/>'+escape(label+' · '+m['speaker']),source_heading))
+            entry.append(p(local_time(m.get('timestamp') or '原始时间未知'),source_time))
             # Separate original lines so a heading does not drag an entire long
             # message to a new page. Preserve empty lines; never shorten quotes.
-            for line in m['text'].split('\n'):story.append(p(line or '\u00a0',source_body))
-            story.append(Spacer(1,10))
-            if m.get('parent_id'):story.append(references([m['parent_id']],'所属材料：'))
+            for line in m['text'].split('\n'):entry.append(p(line or '\u00a0',source_body))
+            entry.append(Spacer(1,10))
+            if m.get('parent_id'):entry.append(references([m['parent_id']],'所属材料：'))
             if m.get('image'):
                 img=Image(str(DATA/'uploads'/Path(m['image']).name))
                 factor=min(450/img.imageWidth,480/img.imageHeight,1)
                 img.drawWidth=img.imageWidth*factor;img.drawHeight=img.imageHeight*factor
-                story.append(img)
+                entry.append(img)
+            # Keep a short attachment label beside its image. Long original
+            # messages remain splittable so no source text is truncated.
+            if m.get('image') and len(m['text'])<=300 and m['text'].count('\n')<=4:
+                story.append(KeepTogether(entry))
+            else:
+                story.extend(entry)
             if supplement_note(m):story.append(p(supplement_note(m),small))
             if media_note(m):story.append(p('图片缺口：'+media_note(m)+'；未据此补写图片内容。',small))
     def footer(canvas,doc):
