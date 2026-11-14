@@ -137,6 +137,8 @@ def supplement_note(message):
 def reader_html(case,run):
     r=run['report']['reader'];lookup={m['id']:m for m in case['messages']}
     assessment = r.get('assessment', [])
+    quality = run.get('editorial_quality', {})
+    limitations = quality.get('limitations', []) if quality.get('status') == 'limited' else []
     labels=source_labels(case);sources=cited_sources(case,r)
     def p(value):return '<p>'+escape(value)+'</p>'
     def refs(ids):
@@ -163,6 +165,9 @@ def reader_html(case,run):
       '<link rel="icon" href="data:,"><title>'+escape(r['title'])+'</title><style>'+css+'</style><main id="top">',
       '<header class="masthead"><span>知瓜 <small>约 '+str(minutes)+' 分钟</small></span><button id="print-report" type="button" hidden>打印 / 存为 PDF</button></header>',
       ('<aside class="draft-notice"><strong>待复核稿</strong>'+p(run.get('draft_reason') or '审稿尚未完成，请核对文中判断。')+'</aside>' if run.get('draft') else ''),
+      ('<aside class="draft-notice" aria-label="本报告的复核局限"><strong>已生成 · 复核有局限</strong>'+
+       p(quality['note'])+'<ul>'+''.join('<li>'+escape(note)+'</li>' for note in limitations)+'</ul></aside>'
+       if limitations else ''),
       '<div class="opening"><h1>'+escape(r['title'])+'</h1><p class="lead">'+escape(r['lead'])+'</p></div>',
       '<section class="now" id="now"><small>目前进展</small><h2>'+escape(r['verdict_title'])+'</h2>',p(r['verdict']),refs(r['verdict_source_ids']),'</section>',
       '<nav class="reader-nav" aria-label="阅读导航">'+('<a href="#turns">关键转折</a>' if r.get('story') else '')+
@@ -337,6 +342,10 @@ def reader_pdf(case,run,path,*,include_sources=True):
     if len(title_text)>=19 and '：' in title_text:title_text=title_text.replace('：','：\n',1)
     story=[Outline('先看事件与当前结果','overview'),p('知瓜 · 私密阅读版',small),p(title_text,title),p(r['deck'],deck),
            HRFlowable(width='100%',thickness=.8,color=colors.HexColor('#cfd6e4'),spaceBefore=8,spaceAfter=18),p(r['lead'])]
+    quality = run.get('editorial_quality', {})
+    if quality.get('status') == 'limited':
+        story.append(p('已生成 · 复核有局限',heading))
+        story.extend(p(note,small) for note in quality.get('limitations', []))
     state=Table([[p('目前进展',small)],[p(r['verdict_title'],deck)],[p(r['verdict'])],[references(r['verdict_source_ids'],'依据：')]],colWidths=[495],hAlign='LEFT')
     state.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),colors.HexColor('#eff6f3')),
         ('LINEBEFORE',(0,0),(0,-1),3,colors.HexColor('#276b61')),

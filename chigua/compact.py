@@ -9,10 +9,17 @@ from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, ASSESSMENT_READER_SCHEMA, s
 from .checkpoints import CallFailure,digest
 from .editor import normalize_presentations
 
-VERSION='compact-v6'
+VERSION='compact-v7'
+NUMBERED_PREVIOUS_VERSION='compact-v6'
 PREVIOUS_VERSION='compact-v5'
-SUPPORTED_VERSIONS={VERSION,PREVIOUS_VERSION}
+SUPPORTED_VERSIONS={VERSION,NUMBERED_PREVIOUS_VERSION,PREVIOUS_VERSION}
 RULES=(ROOT/'skills/chigua-analysis/references/compact-workflow.md').read_text()
+CONTEXT_RULE = (
+    '先辨认冲突前是否已有积怨：分工、承诺、交付、决策依据和信任变化。'
+    '当材料有具体线索时，让前因进入主线和行为判断，不只写最后争吵。'
+    '区分长期矛盾、当事人自述的导火索和随后升级；发生在前不自动证明是原因。'
+    '组织贡献与实际交付分别看，具体失误可以评价，单个细节不推出整体能力或人格。'
+)
 REPORT_OUTPUT = schema_obj({**PUBLISHED_SCHEMA['properties'], 'reader': ASSESSMENT_READER_SCHEMA})
 POLICY={'writer_tokens':6000,'audit_tokens':4000,'patch_tokens':4000,'image_tokens':6000,
         'audit_thinking':'disabled','max_revisions':2,'image_batch':4}
@@ -218,35 +225,39 @@ def numbered_fields(candidate):
     return {f'F{index:03d}': path for index, path in enumerate(paths, 1)}
 
 
-def checked_edits(review, fields, candidate, pack):
+def checked_edits(review, fields, candidate, pack, *, include_reasons=False):
     """Independently check each proposed substitution against the saved draft."""
     changes, rejected = [], []
     used = set()
     cited = {citation['source_id'] for item in review['issues'] for citation in item['evidence']}
     evidence = {row['id']: evidence_text(pack,row['id']) for row in pack['messages'] if row['id'] in cited}
     for item in review['issues']:
+        def reject(message):
+            reason = item['reason'].strip()
+            rejected.append(f'{message}。审稿指出：{reason}' if include_reasons and reason else message)
+
         field = fields.get(item['field_id'])
         excerpt = item['excerpt']
         replacement = item['replacement']
         if field is None or field in used:
-            rejected.append('字段编号未知或重复')
+            reject('字段编号未知或重复')
             continue
         current = locate(candidate, field)
         if not excerpt.strip() or current.count(excerpt) != 1:
-            rejected.append('候选原句缺失或不唯一')
+            reject('候选原句缺失或不唯一')
             continue
         if not item['reason'].strip() or not item['evidence'] or any(
             not citation['quote'].strip()
             or citation['quote'] not in evidence.get(citation['source_id'], '')
             for citation in item['evidence']
         ):
-            rejected.append('意见缺少可逐字核对的证据')
+            reject('意见缺少可逐字核对的证据')
             continue
         if not replacement.strip() and excerpt == current:
-            rejected.append('完整字段不能留空，需改为有依据的表述')
+            reject('完整字段不能留空，需改为有依据的表述')
             continue
         if replacement == excerpt:
-            rejected.append('修改没有变化')
+            reject('修改没有变化')
             continue
         updated = current.replace(excerpt, replacement, 1)
         changes.append((field, updated, item))
@@ -254,7 +265,7 @@ def checked_edits(review, fields, candidate, pack):
     return changes, rejected
 
 
-def review_numbered(case, folder, pack, ids, candidate, original, trace, call):
+def review_numbered(case, folder, pack, ids, candidate, original, trace, call, version):
     """Review a numbered draft, apply verified edits, and check the result."""
     from .report import reader_html
 
@@ -265,7 +276,31 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call):
     selected = fields
     retry_notes = []
     pending = []
-    for revision in range(POLICY['max_revisions'] + 1):
+    single_revision = version == VERSION
+    max_revisions = 1 if single_revision else POLICY['max_revisions']
+    applied_rounds = 0
+    initial_limitations = []
+
+    def finish(status, revisions, limitations=()):
+        quality = {'status':status,'revisions':revisions,'layout':{'status':'web_checked'},
+                   'note':('本报告有尚未完成的复核，请对照原材料阅读。' if limitations
+                           else '结构及带证据定位的模型审稿通过，不等于现实事实得到独立证明。')}
+        if limitations:
+            quality['limitations'] = list(dict.fromkeys(limitations))
+        reader_html(case,{'report':original,'created_at':now(),'editorial_quality':quality})
+        result = {'report':original,'trace':trace,'workflow_version':version,'quality':quality}
+        if status == 'passed':
+            write_json(folder/'accepted.json',result)
+        return result
+
+    def limitation_notes(row):
+        notes = list(row['unresolved'])
+        for item in row.get('review',{}).get('issues',[]):
+            if item['reason'].strip():
+                notes.append(item['reason'])
+        return notes or ['未能确认所提修改准确反映原材料。']
+
+    for revision in range(max_revisions + 1):
         write_json(folder/'review-draft.json', original)
         write_json(folder/f'candidate-{revision}.json', candidate)
         content = [{'id': code, 'section': path.rsplit('/',1)[0], 'text': locate(candidate,path)}
@@ -275,32 +310,42 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call):
                 '替换后应与前后文通顺并保留正确内容。允许删去无依据的片段。每个字段只给一条。'
                 '可接受的表述直接保留，没有实质问题时 issues 为空。不要猜测图中未识别的内容。'
                 '\n材料：'+dump(pack)+'\n字段：'+dump(content))
+        if single_revision:
+            task += '\n'+CONTEXT_RULE+'如果正文漏掉决定性前因，可在最相关的导语、转折或判断字段提出有原文依据的局部补充。'
         if retry_notes:
             task += '\n上轮核对未完成。重新检查这些字段，问题只写最必要的几条；校验反馈：'+dump(retry_notes)
         if pending:
             task += '\n上轮已定位、尚未应用的问题：'+dump(pending)
+        if single_revision and revision:
+            task += '\n这是最终复核。仅列出改后仍有实质疑问的地方和原文依据，原因将作为报告局限供读者核对。'
+        stopped = folder/f'numbered-review-{revision}-stopped.json'
         try:
-            review = call(f'numbered_review_{revision}',task,REVIEW_SCHEMA,
-                          tokens=POLICY['audit_tokens'])
+            if single_revision and stopped.exists():
+                return finish('limited', applied_rounds,
+                              initial_limitations + [json.loads(stopped.read_text())['reason']])
+            review = call(f'numbered_review_{revision}',task,REVIEW_SCHEMA,tokens=POLICY['audit_tokens'])
         except CallFailure as exc:
+            if single_revision and exc.kind not in {'local_recheck','busy'}:
+                reason = ('复核请求未完成：' if revision else '初审请求未完成：') + str(exc)
+                write_json(stopped, {'reason':reason})
+                return finish('limited', applied_rounds, initial_limitations + [reason])
             if exc.kind not in {'invalid_output','output_length'}:
                 raise
             retry_notes = [str(exc)]
             history.append({'revision':revision,'unresolved':retry_notes})
             write_json(folder/'checks.json',history)
             continue
-        changes, rejected = checked_edits(review, selected, candidate, pack)
+        changes, rejected = checked_edits(review, selected, candidate, pack, include_reasons=single_revision)
         pending = []
         history.append({'revision':revision,'review':review,'unresolved':rejected})
         write_json(folder/'checks.json',history)
         if not review['issues']:
-            reader_html(case,{'report':original,'created_at':now()})
-            result = {'report':original,'trace':trace,'workflow_version':VERSION,
-                      'quality':{'status':'passed','revisions':revision,'layout':{'status':'web_checked'},
-                                 'note':'结构及带证据定位的模型审稿通过，不等于现实事实得到独立证明。'}}
-            write_json(folder/'accepted.json',result)
-            return result
-        if revision == POLICY['max_revisions']:
+            if initial_limitations:
+                return finish('limited', applied_rounds, initial_limitations)
+            return finish('passed', applied_rounds if single_revision else revision)
+        if revision == max_revisions:
+            if single_revision:
+                return finish('limited', applied_rounds, initial_limitations + limitation_notes(history[-1]))
             break
         changed_paths = set()
         for path, value, item in changes:
@@ -318,9 +363,18 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call):
                 candidate, original = next_candidate, next_report
                 changed_paths.add(path)
         key = digest(candidate)
+        if changed_paths:
+            applied_rounds += 1
+        if single_revision and not changed_paths:
+            write_json(folder/'checks.json',history)
+            return finish('limited', applied_rounds, limitation_notes(history[-1]))
         if changed_paths and key in seen:
             rejected.append('修改回到了先前草稿')
         seen.add(key)
+        if single_revision:
+            initial_limitations = rejected + [item['reason'] for item in pending]
+            selected = {code:path for code,path in fields.items() if path in changed_paths}
+            continue
         if changed_paths and not rejected:
             retry_notes = []
             # Only the changed fields are up for review. Keep the full text
@@ -460,8 +514,8 @@ def execute(case,folder,progress=lambda stage:None,*,version=VERSION):
         'compose',
         context+'\n生成全新的事件分析和完整阅读稿。除reader外的字段是简短后台参考，reader是读者正文。不要复用旧报告。最多6个核心判断；篇幅按材料缩小，可选引文、图片字段无内容时填空字符串。现状集中写最新状态和关键悬念，先前的误读与更正放在经过里。',
         REPORT_OUTPUT,lambda value:mechanical(value,case,ids),tokens=POLICY['writer_tokens'])
-    if version == VERSION:
-        return review_numbered(case, folder, pack, ids, candidate, original, trace, call)
+    if version in {VERSION,NUMBERED_PREVIOUS_VERSION}:
+        return review_numbered(case, folder, pack, ids, candidate, original, trace, call, version)
     previous=[];seen=set();audit_repairs=0
     for revision in range(POLICY['max_revisions']+1):
         key=digest(candidate)

@@ -128,19 +128,37 @@ class CompactTests(unittest.TestCase):
         ]) as calls:
             result = compact.execute(self.case,self.folder)
         self.assertEqual(result['report']['reader']['verdict'],good['replacement'])
-        self.assertEqual(result['quality']['status'],'passed')
+        self.assertEqual(result['quality']['status'],'limited')
         self.assertEqual(calls.call_count,3)
-        self.assertIn('字段编号未知或重复',calls.call_args.args[0])
+        self.assertIn('字段编号未知或重复',result['quality']['limitations'][0])
 
     def test_unresolved_numbered_review_leaves_readable_draft(self):
         draft = composed()
         invalid = {'field_id':'invented','excerpt':'未知','replacement':'改写','reason':'无法定位','evidence':[]}
-        with patch.object(provider,'generate',side_effect=[(draft,{})]+[({'issues':[invalid]}, {})]*3):
-            with self.assertRaises(CallFailure) as error:
-                compact.execute(self.case,self.folder)
-        self.assertEqual(error.exception.kind,'review_invalid')
+        with patch.object(provider,'generate',side_effect=[(draft,{}),({'issues':[invalid]}, {})]) as calls:
+            result = compact.execute(self.case,self.folder)
+        self.assertEqual(calls.call_count,2)
+        self.assertEqual(result['quality']['status'],'limited')
+        self.assertEqual(result['quality']['revisions'],0)
         self.assertTrue((self.folder/'review-draft.json').exists())
         self.assertFalse((self.folder/'accepted.json').exists())
+
+    def test_final_review_reports_remaining_issue_without_a_second_edit(self):
+        draft = composed()
+        code = next(k for k,v in compact.numbered_fields(draft).items() if v=='/reader/verdict')
+        edit = {'field_id':code,'excerpt':'仍需核对。','replacement':'甲称付过钱。',
+                'evidence':[{'source_id':'S001','quote':'我付了钱'}],'reason':'交代是谁的说法'}
+        remaining = {**edit,'excerpt':edit['replacement'],'replacement':'候选二',
+                     'reason':'还需要付款凭证。'}
+        with patch.object(provider,'generate',side_effect=[
+            (draft,{}),({'issues':[edit]},{}),({'issues':[remaining]},{}),
+        ]) as calls:
+            result = compact.execute(self.case,self.folder)
+        self.assertEqual(calls.call_count,3)
+        self.assertEqual(result['report']['reader']['verdict'],edit['replacement'])
+        self.assertEqual(result['quality']['status'],'limited')
+        self.assertEqual(result['quality']['revisions'],1)
+        self.assertIn('还需要付款凭证。',result['quality']['limitations'])
     def test_exact_paragraph_quote_narrows_patch_to_text_and_keeps_evidence(self):
         pack,_,_=compact.prepare(self.case)
         draft=composed()
