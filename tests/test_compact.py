@@ -139,7 +139,7 @@ class CompactTests(unittest.TestCase):
         with patch.object(provider,'generate',side_effect=[
             (draft,{}),({'issues':[bad,good]},{}),({'issues':[]},{}),
         ]) as calls:
-            result = compact.execute(self.case,self.folder)
+            result = compact.execute(self.case,self.folder,version=compact.ANCHORED_PREVIOUS_VERSION)
         self.assertEqual(result['report']['reader']['verdict'],good['replacement'])
         self.assertEqual(result['quality']['status'],'limited')
         self.assertEqual(calls.call_count,3)
@@ -149,7 +149,7 @@ class CompactTests(unittest.TestCase):
         draft = composed(compare=True)
         invalid = {'field_id':'invented','excerpt':'未知','replacement':'改写','reason':'无法定位','evidence':[]}
         with patch.object(provider,'generate',side_effect=[(draft,{}),({'issues':[invalid]}, {})]) as calls:
-            result = compact.execute(self.case,self.folder)
+            result = compact.execute(self.case,self.folder,version=compact.ANCHORED_PREVIOUS_VERSION)
         self.assertEqual(calls.call_count,2)
         self.assertEqual(result['quality']['status'],'limited')
         self.assertEqual(result['quality']['revisions'],0)
@@ -166,7 +166,7 @@ class CompactTests(unittest.TestCase):
         with patch.object(provider,'generate',side_effect=[
             (draft,{}),({'issues':[edit]},{}),({'issues':[remaining]},{}),
         ]) as calls:
-            result = compact.execute(self.case,self.folder)
+            result = compact.execute(self.case,self.folder,version=compact.ANCHORED_PREVIOUS_VERSION)
         self.assertEqual(calls.call_count,3)
         self.assertEqual(result['report']['reader']['verdict'],edit['replacement'])
         self.assertEqual(result['quality']['status'],'limited')
@@ -176,7 +176,7 @@ class CompactTests(unittest.TestCase):
     def test_comparison_reaches_the_auditor_and_stays_out_of_the_report(self):
         draft = composed(compare=True)
         with patch.object(provider,'generate',side_effect=[(draft,{}),({'issues':[]},{})]) as calls:
-            result = compact.execute(self.case,self.folder)
+            result = compact.execute(self.case,self.folder,version=compact.ANCHORED_PREVIOUS_VERSION)
         self.assertNotIn('reading_choice',result['report'])
         self.assertEqual(result['report']['reader']['story']['arc'][0]['phase'],'经过')
         self.assertIn('现有材料只覆盖付款说法。',calls.call_args.args[0])
@@ -191,7 +191,7 @@ class CompactTests(unittest.TestCase):
         draft['reader'].update(title='退款搁了五天', deck='押金晚了5天才退')
         topic = draft['reader']['story']['central_question']
         with patch.object(provider,'generate',side_effect=[(draft,{}),({'issues':[]},{})]) as calls:
-            result = compact.execute(self.case,self.folder)
+            result = compact.execute(self.case,self.folder,version=compact.ANCHORED_PREVIOUS_VERSION)
         self.assertEqual(result['report']['title'],topic)
         self.assertEqual(result['report']['reader']['title'],topic)
         self.assertEqual(result['report']['reader']['deck'],'')
@@ -206,7 +206,7 @@ class CompactTests(unittest.TestCase):
                 'evidence':[{'source_id':'S001','quote':'我付了钱'}],'reason':'交代是谁的说法'}
         with patch.object(provider,'generate',side_effect=[(draft,{}),({'issues':[edit]},{}),
                                                            ({'issues':[]},{})]) as calls:
-            compact.execute(self.case,self.folder)
+            compact.execute(self.case,self.folder,version=compact.ANCHORED_PREVIOUS_VERSION)
         final_review = calls.call_args.args[0]
         self.assertIn('/reader/title',final_review)
         self.assertIn('/reader/story/arc/0/happened',final_review)
@@ -231,7 +231,7 @@ class CompactTests(unittest.TestCase):
         self.assertEqual(compact.source_check_limits(draft,pack)[1],[0])
         with patch.object(provider,'generate',side_effect=[({'observations':[obs]},{}),(draft,{}),
                                                            ({'issues':[]},{})]):
-            result = compact.execute(self.case,self.folder)
+            result = compact.execute(self.case,self.folder,version=compact.ANCHORED_PREVIOUS_VERSION)
         self.assertEqual(result['quality']['status'],'limited')
         step = result['report']['reader']['story']['arc'][0]
         self.assertEqual((step['event_time'],step['order_basis']),('','先后未确认'))
