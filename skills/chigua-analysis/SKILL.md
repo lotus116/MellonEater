@@ -9,6 +9,7 @@ description: 用知瓜工作台还原聊天事件、分析争议，并自动生�
 
 ## 使用本地流程
 
+- 处理 Mac 微信或 Dukou 导出时，先读 [材料取得与验收](references/wechat-acquisition.md)，执行本地 ZIP 检查；图文缺口须在分析前标明。
 - 浏览器入口由 `python -m chigua.server` 启动，默认仅监听 `127.0.0.1:8765`。
 - 本地材料位于 `data/cases/<case_id>.json`；原图位于 `data/uploads/`。
 - 使用 `python -m chigua.cli analyze <case_id> --provider codex --method B2` 运行证据工作流。模型也可通过 DeepSeek 或兼容 API 配置。
@@ -40,6 +41,8 @@ description: 用知瓜工作台还原聊天事件、分析争议，并自动生�
 - 旧报告重新编辑：`python scripts/reader-edition.py <run_id>`。复用同一工作流及当次输入快照，成功后再替换阅读版，保留旧版和原始分析。
 
 修改工作流后运行单元测试，并用 `python scripts/eval-editorial.py --provider codex` 实跑不同领域、并行事件和残缺材料。评测不能手工修改模型产物来过关；检查实际 PDF，不以模型自评替代事实核验。
+
+仅修改导出排版、引用展示或导入验收、未改变分析与编辑提示词时，复用已有通过稿进行确定性回归和真实导出检查即可；修改模型工作流仍执行上面的实跑评测。正文排版检查不计原文附录页数，附录不得为满足正文篇幅而截断。短引用只是展示编号，不修改模型输出中的原始证据 ID。
 
 ## 交付与边界
 

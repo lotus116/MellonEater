@@ -49,6 +49,48 @@ class ReaderTests(unittest.TestCase):
     def test_parent_cycles_rejected(self):
         with self.assertRaisesRegex(ValueError,'循环'):
             normalize_messages([{'id':'A','text':'a','parent_id':'B'},{'id':'B','text':'b','parent_id':'A'}])
+    def test_original_appendix_links_and_scope(self):
+        rows=normalize_messages([{'id':'parent','text':'原始容器','speaker':'甲'},
+            {'id':'M1','parent_id':'parent','text':'完整原文 <script>不能执行</script>\n第二行','speaker':'乙'},
+            {'id':'unrelated','text':'无关私人聊天'},
+            {'id':'arc-only','text':'仅主线引用的原文'}])
+        r=reader();r['story']=story();r['story']['arc'][0]['source_ids']=['arc-only']
+        case={'messages':rows};before=copy.deepcopy(case)
+        html=report.reader_html(case,{'report':{'reader':r},'created_at':'2026-11-14T00:00:00Z'})
+        self.assertEqual([m['id'] for m in report.cited_sources(case,r)],['parent','M1','arc-only'])
+        self.assertIn('href="#source-M002"',html);self.assertIn('id="source-M002"',html)
+        self.assertIn('原始容器',html);self.assertIn('仅主线引用的原文',html)
+        self.assertIn('&lt;script&gt;不能执行&lt;/script&gt;\n第二行',html)
+        self.assertNotIn('无关私人聊天',html);self.assertEqual(before,case)
+    def test_appendix_missing_image_and_pdf_destinations(self):
+        from pypdf import PdfReader
+        rows=copy.deepcopy(self.messages)
+        rows[0]['text']='原始材料的完整末尾。'
+        rows[0]['source_reference']={'media':[{'status':'unavailable','reason':'missingImage'}]}
+        r=reader();r['chapters'][0]['quote_text']=''
+        case={'messages':rows};run={'report':{'reader':r},'created_at':'2026-11-14T00:00:00Z'}
+        with tempfile.TemporaryDirectory() as d:
+            full=Path(d)/'full.pdf';body=Path(d)/'body.pdf'
+            report.report_pdf(case,run,full)
+            report.report_pdf(case,run,body,include_sources=False)
+            pdf=PdfReader(full);draft=PdfReader(body)
+            text=''.join(p.extract_text() for p in pdf.pages)
+            self.assertIn('原文附录',text);self.assertIn('原始材料的完整末尾。',text)
+            self.assertIn('导出包中没有找到对应图片',text)
+            self.assertNotIn('原文附录\n以下保留',''.join(p.extract_text() for p in draft.pages))
+            self.assertGreater(len(pdf.pages),len(draft.pages))
+            links=[a.get_object() for page in pdf.pages for a in page.get('/Annots',[]) if a.get_object().get('/Subtype')=='/Link']
+            self.assertTrue(links)
+            for link in links:
+                destination=link['/Dest'][0]
+                page=next(p for p in pdf.pages if p.indirect_reference==destination)
+                self.assertIn('原始材料的完整末尾。',page.extract_text())
+    def test_editor_layout_does_not_count_original_appendix(self):
+        from chigua.editor import layout_probe
+        with patch.object(report,'pdf_fonts'),patch.object(report,'report_pdf',return_value={'pages':3}) as render:
+            result=layout_probe({'messages':self.messages},{},reader(),Path('unused.pdf'))
+        self.assertEqual(result['pages'],3)
+        self.assertIs(render.call_args.kwargs['include_sources'],False)
     def test_siblings_inherit_container_source(self):
         rows=normalize_messages([{'id':'A','source_name':'container','children':[
             {'id':'B','text':'b','source_name':'override'}, {'id':'C','text':'c'}]}])

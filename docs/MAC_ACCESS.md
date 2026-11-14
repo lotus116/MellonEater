@@ -6,7 +6,7 @@
 
 | 路线 | 已核对能力及限制 | 本项目判断 |
 |---|---|---|
-| [Dukou / 微信原生合并转发](https://github.com/qzz0518/Dukou) | 项目说明：Mac 微信 4.1.13 起可将多选记录导出为 TXT + 媒体 ZIP，提供离线查看；手动导出不读数据库、不改微信。自动多选依赖界面控件。 | 当前 MVP 首选。先试少量图文，再分批导出；尚未取得本机真实 ZIP。 |
+| [Dukou / 微信原生合并转发](https://github.com/qzz0518/Dukou) | 项目说明：Mac 微信 4.1.13 起可将多选记录导出为 TXT + 媒体 ZIP，提供离线查看；手动导出不读数据库、不改微信。自动多选依赖界面控件。 | 当前 MVP 首选。先试少量图文，再分批导出；已取得真实文本 ZIP；真实图片导出仍待验证。 |
 | [GreenBubbles](https://github.com/bojieli/greenbubbles) | 精确群 ID、时间窗、分页、消息编号和媒体绑定；首次初始化涉及管理员权限、改签名及登录配合。维护者记录的密钥捕获实测版本为 4.1.12 / 4.1.13。 | 自动采集候选；适配及真实 CLI 的合成数据库测试已准备，不能视作本机真实采集通过。 |
 | [Wechat-MCP](https://github.com/xerlxzx/Wechat-MCP) | 在微信副本上改签名，保留原安装；当前构建白名单仅 270102、270135。默认归档范围较广，WXGF 原图仍有缺口。 | 值得研究副本方式；本机 270115 不在支持范围，不能直接接入或绕过白名单。 |
 | [wx-cli](https://github.com/pandorafuture/wx-cli) | 查询与媒体能力丰富；文档的 Mac 密钥获取路线要求关闭 SIP。GreenBubbles 使用其部分解析库。 | 不作为本次初始化入口；不为 demo 关闭系统保护。 |
@@ -57,3 +57,8 @@
 后续：验证当前构建初始化可恢复性 → 用户配合权限及必要登录步骤 → 指定群小时间窗实读 → 与微信逐条核对 → 增量游标和断点恢复 → 三天覆盖与缺图验收。改签名、退出或重新登录前仍须先告知用户，不能因本次选了手动导出而擅自继续初始化。
 
 协议依据：[CLI](https://github.com/bojieli/greenbubbles/blob/v0.10.0/docs/CLI_REFERENCE.md)、[密钥获取约束](https://github.com/bojieli/greenbubbles/blob/v0.10.0/docs/PASSPHRASE_ACQUISITION.md)、[媒体绑定源码](https://github.com/bojieli/greenbubbles/blob/v0.10.0/Native/GreenBubbles/src/live_attachment.rs)、[Wechat-MCP 构建白名单](https://github.com/xerlxzx/Wechat-MCP/blob/main/src/wechat_bridge/adapters/wechat_4_1.py)。
+## ZIP 缺图与工作流接入（2026-11-14）
+
+渡口导出已经接入本地导入流程，但稳定的自动历史采集尚未完成。完整步骤及能力边界见 [采集验收说明](../skills/chigua-analysis/references/wechat-acquisition.md)。
+
+可先运行 `python scripts/inspect-wechat-zip.py <ZIP>`，只看数量、不输出聊天正文。图片标记与图片文件必须分开核验；只有 TXT 的包不能恢复图片。网页现会持续显示本包缺图数，PDF/HTML 阅读报告带有文中引用的完整原文附录，含原始显示名，仅适合私下核对。

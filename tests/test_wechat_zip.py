@@ -6,7 +6,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from PIL import Image
-from chigua.wechat_zip import import_archives, transcript
+from chigua.wechat_zip import import_archives, transcript, inspect_archive
 
 START='2026-11-01T00:00:00+08:00'; END='2026-11-01T23:59:59+08:00'
 
@@ -41,6 +41,14 @@ class NativeZipTests(unittest.TestCase):
         self.assertEqual((self.data/'uploads'/row['image']).read_bytes(),png())
         for p in self.data.rglob('*'):
             if p.is_file():self.assertEqual(p.stat().st_mode & 0o077,0)
+    def test_read_only_inventory_reports_missing_files_without_content(self):
+        path=self.archive([('聊天记录.txt',record('[图片] one.png\n私人正文'))])
+        counts=inspect_archive(path)
+        self.assertEqual(counts['files'],1);self.assertEqual(counts['missingImage'],1)
+        self.assertEqual(counts['image_references'],1)
+        self.assertNotIn('私人正文',json.dumps(counts));self.assertFalse(self.data.exists())
+        path=self.archive([('聊天记录.txt',record('[图片] one.png')),('media/one.png',png())])
+        self.assertEqual(inspect_archive(path)['matched_image_files'],1)
     def test_merged_batches_do_not_cross_match_same_filename(self):
         path=self.archive([('聊天记录.txt','聊天：synthetic\nnot a native transcript'),
             ('batches/0001/聊天记录.txt',record('[图片] same.png')),

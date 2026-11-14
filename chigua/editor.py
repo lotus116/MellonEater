@@ -96,7 +96,7 @@ def layout_probe(case,analysis,reader,path):
     from reportlab.platypus.doctemplate import LayoutError
     try:
         result=report_pdf(case,{'report':{**analysis,'reader':reader},'created_at':now(),
-            'origin':'editorial_candidate','method':'editor'},path)
+            'origin':'editorial_candidate','method':'editor'},path,include_sources=False)
     except LayoutError:
         return {'status':'overflow','note':'段落或表格无法放入页面，请精简过长内容。'}
     return {'status':'checked',**result}

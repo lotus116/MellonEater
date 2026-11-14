@@ -84,14 +84,55 @@ def image_uri(name):
     return f'data:{mime};base64,'+base64.b64encode(path.read_bytes()).decode()
 
 
+def source_labels(case):
+    """Display aliases only; immutable evidence IDs remain in the stored result."""
+    return {m['id']:f'M{i:03d}' for i,m in enumerate(case['messages'],1)}
+
+
+def cited_sources(case, reader):
+    ids=set()
+    def visit(value):
+        if isinstance(value,dict):
+            for key,item in value.items():
+                if key.endswith('source_ids'):ids.update(item)
+                elif key in ('quote_source_id','image_id') and item:ids.add(item)
+                else:visit(item)
+        elif isinstance(value,list):
+            for item in value:visit(item)
+    visit(reader)
+    lookup={m['id']:m for m in case['messages']}
+    if ids-lookup.keys():raise ValueError('报告引用包含不存在的材料，无法导出原文。')
+    pending=list(ids)
+    while pending:
+        parent=lookup[pending.pop()].get('parent_id')
+        if parent and parent not in ids:
+            if parent not in lookup:raise ValueError('原文的父材料不存在。')
+            ids.add(parent);pending.append(parent)
+    return [m for m in case['messages'] if m['id'] in ids]
+
+
+def source_note(case):
+    return case.get('source_note','').replace('未自动发送给模型。','导入步骤本身未启动模型分析。')
+
+
+def media_note(message):
+    reasons={'missingImage':'导出包中没有找到对应图片',
+             'ambiguousImage':'存在多个同名图片，无法确定对应关系',
+             'imageTooLarge':'图片超过处理上限',
+             'imageFormatUnavailable':'图片格式暂时无法读取'}
+    missing=[m for m in (message.get('source_reference') or {}).get('media',[]) if m.get('status')=='unavailable']
+    return '；'.join(dict.fromkeys(reasons.get(m.get('reason'),'图片未取得') for m in missing))
+
+
 def reader_html(case,run):
     r=run['report']['reader'];lookup={m['id']:m for m in case['messages']}
+    labels=source_labels(case);sources=cited_sources(case,r)
     def p(value):return '<p>'+escape(value)+'</p>'
-    def refs(ids):return '<small>'+', '.join(escape(i) for i in ids)+'</small>'
+    def refs(ids):return '<small>'+', '.join(f'<a href="#source-{labels[i]}">{labels[i]}</a>' for i in dict.fromkeys(ids))+'</small>'
     parts=['<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
       '<title>'+escape(r['title'])+'</title><style>body{margin:0;color:#213047;background:#f2f4f8;font:17px/1.9 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}main{max-width:760px;margin:24px auto;padding:48px;background:white}h1{font-size:32px;line-height:1.5}h2{font-size:23px;margin-top:36px}small,figcaption{font-size:13px;color:#5a687b}blockquote{border-left:3px solid #4350ae;padding-left:20px;color:#4350ae}figure{margin:24px 0;text-align:center}img{max-width:100%;max-height:720px}li{margin-bottom:8px}@media(max-width:640px){main{padding:24px;margin:0}}@media print{main{margin:0;padding:0}body{background:white}figure{break-inside:avoid}}</style><main><small>知瓜 · 私密材料阅读版</small>',
       '<h1>'+escape(r['title'])+'</h1>',p(r['deck']),p(r['lead']),'<h2>先认一下人</h2>']
-    for person in r['people']:parts.append(p(person['name']+'：'+person['role']))
+    for person in r['people']:parts.extend([p(person['name']+'：'+person['role']),refs(person.get('source_ids',[]))])
     if r.get('story'):
         story=r['story'];parts.extend(['<h2>事情是怎样走到这一步的</h2>',p(story['central_question'])])
         for i,step in enumerate(story['arc'],1):
@@ -101,15 +142,25 @@ def reader_html(case,run):
     for ch in r['chapters']:
         parts.append('<h2>'+escape(ch['title'])+'</h2>')
         for para in ch['paragraphs']:parts.extend([p(para['text']),refs(para['source_ids'])])
-        if ch['quote_text']:parts.append('<blockquote>'+escape(ch['quote_text'])+p('—— '+ch['quote_speaker'])+'</blockquote>')
+        if ch['quote_text']:parts.append('<blockquote>'+escape(ch['quote_text'])+p('—— '+ch['quote_speaker'])+refs([ch['quote_source_id']])+'</blockquote>')
         if ch['image_id']:
-            parts.append('<figure><img src="'+image_uri(lookup[ch['image_id']]['image'])+'" alt="'+escape(ch['image_caption'])+'"><figcaption>'+escape(ch['image_caption'])+' ['+escape(ch['image_id'])+']</figcaption></figure>')
+            parts.append('<figure><img src="'+image_uri(lookup[ch['image_id']]['image'])+'" alt="'+escape(ch['image_caption'])+'"><figcaption>'+escape(ch['image_caption'])+' '+refs([ch['image_id']])+'</figcaption></figure>')
     if r.get('story',{}).get('threads'):
         parts.append('<h2>把支线放回主线</h2>')
         for thread in r['story']['threads']:parts.extend([p(thread['name']+'：'+thread['role_in_story']),refs(thread['source_ids'])])
     parts.extend(['<h2>'+escape(r['verdict_title'])+'</h2>',p(r['verdict']),refs(r['verdict_source_ids']),'<h2>还有哪些地方没说清</h2><ul>'])
     parts.extend('<li>'+escape(q)+'</li>' for q in r['open_questions'])
-    parts.extend(['</ul><hr>',p(case.get('source_note','')),'<small>整理时间：'+escape(local_time(run.get('reader_updated_at',run['created_at'])))+'（香港时间）。材料编号可在本地工作台回查。</small></main></html>'])
+    parts.extend(['</ul><hr>',p(source_note(case)),'<small>整理时间：'+escape(local_time(run.get('reader_updated_at',run['created_at'])))+'（香港时间）。点击短编号可跳到文末原文。</small>',
+        '<h2>原文附录</h2>',p('以下为文中引用的原始材料及其父材料，不代表全部群记录。保留原文、显示名与时间，可能含个人信息，仅供私下核对；编号表示本包顺序，不代表事件先后。')])
+    for m in sources:
+        parts.extend([f'<section id="source-{labels[m["id"]]}"><h3>'+labels[m['id']]+' · '+escape(m['speaker'])+'</h3>',
+            '<small>'+escape(local_time(m.get('timestamp') or '原始时间未知'))+'</small>',
+            '<pre style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit">'+escape(m['text'])+'</pre>'])
+        if m.get('parent_id'):parts.append('所属材料 '+refs([m['parent_id']]))
+        if m.get('image'):parts.append('<img src="'+image_uri(m['image'])+'" alt="材料 '+labels[m['id']]+' 原图">')
+        if media_note(m):parts.append(p('图片缺口：'+media_note(m)+'；未据此补写图片内容。'))
+        parts.append('</section>')
+    parts.append('</main></html>')
     return ''.join(parts)
 
 
@@ -168,13 +219,13 @@ def audit_pdf(case, run, path: Path):
                       title=r['title'],author='知瓜').build(story,onFirstPage=footer,onLaterPages=footer)
 
 
-def report_pdf(case,run,path):
+def report_pdf(case,run,path,*,include_sources=True):
     if 'reader' not in run['report']:
         return audit_pdf(case,run,path)
-    return reader_pdf(case,run,path)
+    return reader_pdf(case,run,path,include_sources=include_sources)
 
 
-def reader_pdf(case,run,path):
+def reader_pdf(case,run,path,*,include_sources=True):
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.lib.styles import ParagraphStyle
@@ -204,6 +255,13 @@ def reader_pdf(case,run,path):
     quote.fontName=fonts['quote']
     def p(text,s=body):return Paragraph(escape(str(text)).replace('\n','<br/>'),s)
     r=run['report']['reader'];lookup={m['id']:m for m in case['messages']}
+    labels=source_labels(case);sources=cited_sources(case,r)
+    def references(ids,prefix='材料：'):
+        links=[]
+        for mid in dict.fromkeys(ids):
+            label=labels[mid]
+            links.append(f'<link href="#source-{label}" color="#4350ae">{label}</link>' if include_sources else label)
+        return Paragraph(escape(prefix)+' / '.join(links),small)
     title_text=r['title']
     if len(title_text)>=19 and '：' in title_text:title_text=title_text.replace('：','：\n',1)
     story=[p('知瓜 · 一起把前因后果看明白',small),p(title_text,title),p(r['deck'],deck),
@@ -225,7 +283,7 @@ def reader_pdf(case,run,path):
         arc_body=ParagraphStyle('ArcBody',parent=body,fontSize=10.8,leading=18,spaceAfter=5)
         rows=[]
         for index,step in enumerate(spine['arc'],1):
-            rows.append([[p(str(index)+' / '+step['stage'],arc_label),p(step['order_basis'],small)],
+            rows.append([[p(str(index)+' / '+step['stage'],arc_label),p(step['order_basis'],small),references(step['source_ids'],'')],
                          [p(step['happened'],arc_body),p('变化：'+step['changed'],small)]])
         table=Table(rows,colWidths=[116,379],hAlign='LEFT')
         table.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'TOP'),
@@ -239,26 +297,48 @@ def reader_pdf(case,run,path):
         for para in chapter['paragraphs']:
             story.append(p(para['text']));refs.extend(para['source_ids'])
         if chapter['quote_text']:
-            story.append(KeepTogether([p('“'+chapter['quote_text']+'”',quote),p('—— '+chapter['quote_speaker']+' / '+chapter['quote_source_id'],small)]))
+            story.append(KeepTogether([p('“'+chapter['quote_text']+'”',quote),references([chapter['quote_source_id']],'—— '+chapter['quote_speaker']+' / ')]))
         image_id=chapter['image_id']
         if image_id and image_id in lookup:
             m=lookup[image_id];image_path=DATA/'uploads'/Path(m['image']).name
             img=Image(str(image_path));factor=min(315/img.imageWidth,400/img.imageHeight,1)
             img.drawWidth=img.imageWidth*factor;img.drawHeight=img.imageHeight*factor;img.hAlign='CENTER'
-            story.append(KeepTogether([Spacer(1,8),img,Spacer(1,7),p(chapter['image_caption']+' ['+image_id+']',small)]))
-        if refs:story.append(p('本段材料：'+', '.join(dict.fromkeys(refs)),small))
+            story.append(KeepTogether([Spacer(1,8),img,Spacer(1,7),references([image_id],chapter['image_caption']+' / ')]))
+        if refs:story.append(references(refs,'本段材料：'))
     if r.get('story',{}).get('threads'):
         story.append(p('把支线放回主线',heading))
         for thread in r['story']['threads']:
-            story.extend([p(thread['name']+'：'+thread['role_in_story']),p('材料：'+', '.join(thread['source_ids']),small)])
-    story.extend([p(r['verdict_title'],heading),p(r['verdict']),p('判断依据：'+', '.join(r['verdict_source_ids']),small)])
+            story.extend([p(thread['name']+'：'+thread['role_in_story']),references(thread['source_ids'])])
+    story.extend([p(r['verdict_title'],heading),p(r['verdict']),references(r['verdict_source_ids'],'判断依据：')])
     if r['open_questions']:
         story.append(p('还有哪些地方没说清',heading))
         for x in r['open_questions']:story.append(p('• '+x))
+    if include_sources and sources:
+        story.extend([PageBreak(),p('原文附录',title)])
     story.append(KeepTogether([Spacer(1,14),HRFlowable(width='100%',thickness=.5,color=colors.HexColor('#d5dce6'),spaceAfter=12),
-        p('关于这份整理',small),p(case.get('source_note',''),small),
-        p('这是对现有材料的还原与评价，不是对记录外全部事实的认证。文中编号可在本地工作台回查原文；完整证据清单和运行信息保留在工作台。',small),
+        p('关于这份整理',small),p(source_note(case),small),
+        p('这是对现有材料的还原与评价，不是对记录外全部事实的认证。文中短编号对应文末原文附录；完整证据清单和运行信息保留在工作台。',small),
         p('整理时间：'+local_time(run.get('reader_updated_at',run['created_at']))+'（香港时间）',small)]))
+    if include_sources and sources:
+        story.append(p('以下保留文中引用的原始材料及其父材料，不代表全部群记录。原文、显示名与时间可能含个人信息，仅供私下核对。编号表示本包顺序，不代表事件先后。',small))
+        source_heading=ParagraphStyle('SourceHeading',parent=heading,fontSize=12,leading=20,spaceBefore=12,spaceAfter=6)
+        source_body=ParagraphStyle('SourceBody',parent=body,fontSize=11,leading=19,spaceAfter=0)
+        source_time=ParagraphStyle('SourceTime',parent=small,keepWithNext=True)
+        for m in sources:
+            label=labels[m['id']]
+            story.append(Paragraph(f'<a name="source-{label}"/>'+escape(label+' · '+m['speaker']),source_heading))
+            story.append(p(local_time(m.get('timestamp') or '原始时间未知'),source_time))
+            # Separate original lines so a heading does not drag an entire long
+            # message to a new page. Preserve empty lines; never shorten quotes.
+            for line in m['text'].split('\n'):story.append(p(line or '\u00a0',source_body))
+            story.append(Spacer(1,10))
+            if m.get('parent_id'):story.append(references([m['parent_id']],'所属材料：'))
+            if m.get('image'):
+                img=Image(str(DATA/'uploads'/Path(m['image']).name))
+                factor=min(450/img.imageWidth,480/img.imageHeight,1)
+                img.drawWidth=img.imageWidth*factor;img.drawHeight=img.imageHeight*factor
+                story.append(img)
+            if media_note(m):story.append(p('图片缺口：'+media_note(m)+'；未据此补写图片内容。',small))
     def footer(canvas,doc):
         metrics['pages']=max(metrics['pages'],doc.page)
         canvas.setFont(fonts['ui'],8);canvas.setFillColor(muted)

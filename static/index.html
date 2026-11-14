@@ -6,6 +6,7 @@
 <div class="side-bottom"><div class="local-dot">材料保存在本机</div><button class="plain wide" id="open-settings">模型与接入设置</button><span class="version">Mac demo / 0.1</span></div></aside>
 <main id="main" tabindex="-1"><header class="topbar"><span id="case-breadcrumb">事件与证据工作台</span><span class="model-pill" id="model-status">正在连接</span></header>
 <section class="case-header"><div><p class="eyebrow">读懂经过，也看清依据</p><h1 id="case-title">打开一个案例</h1><p id="case-meta" class="muted">从左侧导入聊天记录，或查看已有案例。</p></div><div class="header-actions"><button id="analyze" class="primary">生成分析报告</button><button id="export-pdf" class="secondary" disabled>导出 PDF</button></div></section>
+<p id="media-warning" class="notice hidden" role="status"></p>
 <div id="feedback" role="status" aria-live="polite" class="feedback hidden"></div>
 <details class="analysis-options"><summary>分析方式与提问身份</summary><div class="option-row"><label>分析方式<select id="method"><option value="B2">证据工作流（四阶段）</option><option value="B1">详细提示（单次）</option><option value="B0">普通提示（单次）</option><option value="A1">自由笔记（四阶段对照）</option></select></label><label>提交者身份<input id="identity" value="旁观者" maxlength="200"></label><p class="muted">仅发送当前案例给所选模型。不同运行会分别保存。</p></div></details>
 <div class="workspace"><section class="reading"><nav class="tabs" aria-label="内容视图"><button class="tab active" data-tab="report" aria-selected="true">事件报告</button><button class="tab" data-tab="claims" aria-selected="false">证据清单</button><button class="tab" data-tab="materials" aria-selected="false">全部材料</button><button class="tab" data-tab="runs" aria-selected="false">运行记录</button></nav>
@@ -20,9 +21,9 @@
 <label>你想了解什么？<input id="import-question" placeholder="留空时自动发现事件并分析主要争议"></label>
 <p id="import-error" class="error" role="alert"></p><div class="dialog-footer"><button type="button" class="secondary close">取消</button><button type="submit" class="primary" id="save-case">保存材料</button></div></form></dialog>
 <dialog id="zip-dialog" aria-labelledby="zip-heading"><form id="zip-form">
-<div class="dialog-head"><div><h2 id="zip-heading">导入微信 ZIP</h2><p class="muted">直接选择 Dukou 导出的压缩包，无需解压。文字和图片一起导入。</p></div><button type="button" class="icon-button close" aria-label="关闭 ZIP 导入">×</button></div>
+<div class="dialog-head"><div><h2 id="zip-heading">导入微信 ZIP</h2><p class="muted">直接选择 Dukou 导出的压缩包，无需解压。导入文字及包内实际包含的图片。</p></div><button type="button" class="icon-button close" aria-label="关闭 ZIP 导入">×</button></div>
 <label>选择压缩包（必填，可多选）<input id="zip-files" type="file" accept=".zip,application/zip" multiple required aria-describedby="zip-help"></label>
-<p id="zip-help" class="muted">每次总计不超过 256 MB；分批导出的文件可一起选择。</p>
+<p id="zip-help" class="muted">每次总计不超过 256 MB；分批导出的文件可一起选择。只有 [图片] 文件名、没有图片文件的 ZIP 无法恢复原图。</p>
 <label>案例名称（必填）<input id="zip-title" required maxlength="100" placeholder="例如：群聊事件回顾"></label>
 <label>群名（必填）<input id="zip-group" required maxlength="200" placeholder="这些记录来自哪个群"></label>
 <div class="zip-dates"><label>开始日期（必填）<input id="zip-start" type="date" required></label><label>结束日期（必填）<input id="zip-end" type="date" required></label></div>

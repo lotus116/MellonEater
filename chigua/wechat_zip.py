@@ -94,6 +94,36 @@ def image_path(reference, prefix, files):
     return None, 'ambiguousImage' if matches else 'missingImage'
 
 
+def inspect_archive(path):
+    """Read-only package check. Return counts, never chat text or member names.
+
+    A matched filename does not prove a decodable image; import performs that check.
+    """
+    path=Path(path)
+    if not path.is_file() or path.stat().st_size>MAX_ARCHIVE:
+        raise ValueError('ZIP 不存在或大于 256 MB。')
+    counts=Counter()
+    try:
+        with zipfile.ZipFile(path) as archive:
+            files=directory(archive);sources=native_texts(files)
+            counts.update(files=len(files),transcripts=len(sources))
+            for source in sources:
+                if files[source].file_size>4*1024*1024:raise ValueError('单份聊天文字超过 4 MB。')
+                prefix=str(PurePosixPath(source).parent)
+                prefix='' if prefix=='.' else prefix+'/'
+                for _,_,body,_ in transcript(archive.read(files[source]).decode('utf-8-sig')):
+                    counts['records']+=1
+                    for line in body.splitlines():
+                        match=MARKER.fullmatch(line.strip())
+                        if match:
+                            counts['image_references']+=1
+                            target,error=image_path(match[2],prefix,files)
+                            counts['matched_image_files' if target else error]+=1
+    except (zipfile.BadZipFile,UnicodeError,NotImplementedError,RuntimeError):
+        raise ValueError('ZIP 校验或文字解码失败。') from None
+    return dict(counts)
+
+
 def preview(blob, uploads, originals, name):
     from PIL import Image, UnidentifiedImageError
     try:
