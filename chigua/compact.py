@@ -5,12 +5,13 @@ import json
 import re
 from pathlib import Path
 from . import provider
-from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, schema_obj, validate_schema, validate_report, write_json, now
+from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, ASSESSMENT_READER_SCHEMA, schema_obj, validate_schema, validate_report, write_json, now
 from .checkpoints import CallFailure,digest
 from .editor import normalize_presentations
 
-VERSION='compact-v4'
+VERSION='compact-v5'
 RULES=(ROOT/'skills/chigua-analysis/references/compact-workflow.md').read_text()
+REPORT_OUTPUT = schema_obj({**PUBLISHED_SCHEMA['properties'], 'reader': ASSESSMENT_READER_SCHEMA})
 POLICY={'writer_tokens':6000,'audit_tokens':4000,'patch_tokens':4000,'image_tokens':6000,
         'audit_thinking':'disabled','max_revisions':2,'image_batch':4}
 VISION_SCHEMA=schema_obj({'observations':{'type':'array','items':schema_obj({
@@ -78,17 +79,32 @@ def evidence_text(pack,sid):
     return '\n'.join(parts)
 
 
-def narrow_paragraph(issue, value):
-    """Resolve a paragraph pointer only when its text contains the exact quote."""
-    path = issue['path']
+def narrow_text_field(issue, candidate, value):
+    """Use an exact, unique quote within the cited paragraph or assessment."""
+    original_path = issue['path']
+    path = original_path
     quote = issue['candidate_excerpt']
-    if (not re.fullmatch(r'/reader/chapters/\d+/paragraphs/\d+', path)
-            or not isinstance(value, dict) or not isinstance(value.get('text'), str)
-            or not quote.strip() or quote not in value['text']):
+    if not quote.strip() or isinstance(value, str) and quote in value:
         return value
-    issue.setdefault('original_path', path)
-    issue['path'] = path + '/text'
-    return value['text']
+    assessment_fields = ('title', 'observation', 'judgment', 'inference', 'counterpoint')
+    if re.fullmatch(r'/reader/assessment/\d+/(?:'+'|'.join(assessment_fields)+')', path):
+        path = path.rsplit('/', 1)[0]
+        value = locate(candidate, path)
+    if not isinstance(value, dict):
+        return value
+    if re.fullmatch(r'/reader/chapters/\d+/paragraphs/\d+', path):
+        fields = ('text',)
+    elif re.fullmatch(r'/reader/assessment/\d+', path):
+        fields = assessment_fields
+    else:
+        return value
+    matched = [field for field in fields if isinstance(value.get(field), str) and quote in value[field]]
+    if len(matched) != 1:
+        return value
+    field = matched[0]
+    issue.setdefault('original_path', original_path)
+    issue['path'] = path + '/' + field
+    return value[field]
 
 
 def audit_issues(audit,candidate,pack):
@@ -113,7 +129,7 @@ def audit_issues(audit,candidate,pack):
         if not issue['key'] or issue['key'] in seen:raise ValueError('审稿问题编号缺失或重复。')
         seen.add(issue['key'])
         value=locate(candidate,issue['path'])
-        value=narrow_paragraph(issue,value)
+        value=narrow_text_field(issue,candidate,value)
         if isinstance(value,dict) or isinstance(value,list) and any(isinstance(x,(list,dict)) for x in value):
             raise ValueError('审稿定位范围过大，必须指出具体文字或引用字段，不能授权整篇重写。')
         text=value if isinstance(value,str) else dump(value)
@@ -147,7 +163,7 @@ def can_recover_audit(folder, stage):
                 issues = audit_issues(audit, candidate, pack)
             except (OSError, ValueError, IndexError, KeyError, TypeError):
                 continue
-            if any(issue.get('original_path', '') + '/text' == issue['path'] for issue in issues):
+            if any(issue.get('original_path') and issue['original_path'] != issue['path'] for issue in issues):
                 return True
     except (OSError, ValueError):
         pass
@@ -176,7 +192,7 @@ def apply_patch(candidate,patch,issues):
 
 
 def mechanical(candidate,case,ids):
-    validate_schema(candidate,PUBLISHED_SCHEMA)
+    validate_schema(candidate,REPORT_OUTPUT)
     original=map_refs(candidate,{v:k for k,v in ids.items()})
     original['reader'],fixes=normalize_presentations(original['reader'],case['messages'])
     validate_report(original,case['messages'])
@@ -198,6 +214,7 @@ def audit_task(pack,candidate,previous):
     return (context+'\n独立核对候选稿。只阻断具体事实/时序/因果错误、重要遗漏、身份泄露或无法理解的问题；不要把措辞偏好判为错误。'
             '每个问题写 JSON Pointer 路径与该字段逐字片段。事实类必须提供逐字原文 evidence，并解释如何直接冲突；不能编造原文，也不能把图内时间当分享时间。'
             '逐句核对导语、现状、转折和正文中的因果及动作顺序。尤其检查“经某人提醒才知道”“由某人澄清”等归因。先自行更正、后得到确认时，把更正归给当事人、确认归给后发言的人。即使导语写对了，也要检查现状和正文是否另有错误归因。'
+            '核对 assessment 里的观察是否能在对应原文里找到，判断是否说明具体做法及影响，推测有没有被当成事实。证据只支持言行时，可以评价言行，不因缺少认错或无法知道动机而否定这个判断。'
             '未发现阻断问题时 decision=pass，可留下 suggestion；严禁为了凑维度找问题。'
             '\n先前已定位的问题（可能已解决，不默认正确，核对是否解决，勿反向改回）：'+dump(previous)+
             '\n候选稿：'+dump(candidate))
@@ -274,7 +291,7 @@ def execute(case,folder,progress=lambda stage:None):
     candidate,original,fixes=checked_call(
         'compose',
         context+'\n生成全新的事件分析和完整阅读稿。除reader外的字段是简短后台参考，reader是读者正文。不要复用旧报告。最多6个核心判断；篇幅按材料缩小，可选引文、图片字段无内容时填空字符串。现状集中写最新状态和关键悬念，先前的误读与更正放在经过里。',
-        PUBLISHED_SCHEMA,lambda value:mechanical(value,case,ids),tokens=POLICY['writer_tokens'])
+        REPORT_OUTPUT,lambda value:mechanical(value,case,ids),tokens=POLICY['writer_tokens'])
     previous=[];seen=set();audit_repairs=0
     for revision in range(POLICY['max_revisions']+1):
         key=digest(candidate)

@@ -8,7 +8,8 @@ from test_editor import candidate
 
 
 def composed():
-    return compact.map_refs({**valid_report(),'reader':candidate()},{'M0001':'S001','M1':'S001'})
+    reader = {**candidate(), 'assessment': []}
+    return compact.map_refs({**valid_report(),'reader':reader},{'M0001':'S001','M1':'S001'})
 
 
 def issue():
@@ -107,6 +108,28 @@ class CompactTests(unittest.TestCase):
         review['candidate_excerpt']='这句不在段落里'
         with self.assertRaisesRegex(ValueError,'范围过大'):
             compact.audit_issues({'decision':'revise','issues':[review]},draft,pack)
+    def test_assessment_repairs_only_the_unique_text_field_and_requires_sources(self):
+        pack, ids, _ = compact.prepare(self.case)
+        draft = composed()
+        draft['reader']['assessment'] = [{
+            'title':'先查凭证','observation':'甲说付过钱','source_ids':['S001'],
+            'judgment':'可以先提供收据','inference':'可能转错账户',
+            'counterpoint':'也可能是银行延迟','conflict_ids':[],
+        }]
+        review = {**issue(), 'path':'/reader/assessment/0', 'candidate_excerpt':'可能转错账户'}
+        blockers = compact.audit_issues({'decision':'revise','issues':[review]}, draft, pack)
+        self.assertEqual(blockers[0]['path'], '/reader/assessment/0/inference')
+        review['path'] = '/reader/assessment/0/counterpoint'
+        blockers = compact.audit_issues({'decision':'revise','issues':[review]}, draft, pack)
+        self.assertEqual(blockers[0]['path'], '/reader/assessment/0/inference')
+        draft['reader']['assessment'][0]['judgment'] = '可能转错账户，需要回查。'
+        with self.assertRaisesRegex(ValueError,'原句不在'):
+            compact.audit_issues({'decision':'revise','issues':[review]}, draft, pack)
+        _, report, _ = compact.mechanical(draft, self.case, ids)
+        self.assertEqual(report['reader']['assessment'][0]['source_ids'], ['M0001'])
+        draft['reader']['assessment'][0]['source_ids'] = ['S404']
+        with self.assertRaisesRegex(ValueError,'不存在的消息'):
+            compact.mechanical(draft, self.case, ids)
     def test_suggestions_do_not_block_and_decision_must_match(self):
         pack,_,_=compact.prepare(self.case);suggestion=issue();suggestion['severity']='suggestion'
         self.assertEqual(compact.audit_issues({'decision':'pass','issues':[suggestion]},composed(),pack),[])

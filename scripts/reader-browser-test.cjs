@@ -10,12 +10,24 @@ const fs=require('node:fs');
  await page.goto('http://127.0.0.1:8765/?case='+cid);await page.locator('.reader-title').waitFor();
  if(await page.locator('#method').inputValue()!=='B1')throw Error('wrong default');
  await page.locator('.arc-step').first().locator('[data-ref]').first().click();await page.locator('.evidence-card pre').waitFor();
+ const hasAssessment=Boolean(data.report.reader.assessment?.length);
+ if(hasAssessment){
+  const item=page.locator('#reader-assessment article').first();
+  await item.locator('summary').click();await item.locator('[data-ref]').first().click();
+  await page.locator('.evidence-card pre').waitFor();
+ }
  fs.mkdirSync('tmp/reader-v2',{recursive:true});await page.screenshot({path:'tmp/reader-v2/workspace.png',fullPage:false});
  await page.setViewportSize({width:390,height:844});
  if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error('workspace mobile overflow');
  await page.goto('http://127.0.0.1:8765/report/'+run+'/html');await page.locator('h1').waitFor();
  if(await page.evaluate(()=>[...document.querySelectorAll('a[href^="#"]')].some(a=>!document.getElementById(a.hash.slice(1)))))throw Error('missing internal target');
  if(!await page.locator('.turn:not([open]) .turn-brief').first().isVisible())throw Error('turn summary must be readable without opening');
+ if(hasAssessment){
+  const item=page.locator('.assessment-item').first();
+  if(!await item.locator('.behavior-judgment').isVisible())throw Error('behavior judgment should be readable at a glance');
+  await item.locator('summary').click();await item.locator('.refs a').first().click();
+  await page.locator('.original:target[open]').waitFor({timeout:5000});
+ }
  const initially=await page.locator('.chapter[open]').count();if(initially!==0)throw Error('chapters should start compact');
  await page.getByRole('button',{name:'展开详细经过',exact:true}).click();
  if(await page.locator('.chapter:not([open])').count())throw Error('expand not applied (CSP?)');
@@ -23,20 +35,28 @@ const fs=require('node:fs');
  if(await page.locator('.chapter[open]').count())throw Error('collapse failed');
  await page.locator('.now .refs a').first().click();
  await page.locator('.original:target[open]').waitFor({timeout:5000});
- const imageSource=page.locator('.original').filter({has:page.locator('.zoom-image')}).first();
+ const imageSources=page.locator('.original').filter({has:page.locator('.zoom-image')});
+ const imageSource=await imageSources.count()?imageSources.first():page.locator('.original').first();
  const label=(await imageSource.locator('summary strong').innerText()).split(' · ')[0];
  await page.locator('#source-search').fill(label);
  if(await page.locator('.original:not([hidden])').count()!==1)throw Error('search mismatch');
  if(!await page.locator('.original:not([hidden])').evaluate(d=>d.open))await page.locator('.original:not([hidden]) summary').click();
- await page.locator('.original:not([hidden]) .zoom-image').click();
- if(await page.locator('dialog[open] img').evaluate(img=>!img.complete||!img.naturalWidth))throw Error('image not loaded');
- await page.getByRole('button',{name:'关闭图片',exact:true}).click();
- if(await page.locator('dialog[open]').count())throw Error('dialog not closed');
+ const zoom=page.locator('.original:not([hidden]) .zoom-image');
+ if(await zoom.count()){
+  await zoom.click();
+  if(await page.locator('dialog[open] img').evaluate(img=>!img.complete||!img.naturalWidth))throw Error('image not loaded');
+  await page.getByRole('button',{name:'关闭图片',exact:true}).click();
+  if(await page.locator('dialog[open]').count())throw Error('dialog not closed');
+ }
  await page.locator('#source-search').fill('');
  await page.goto('http://127.0.0.1:8765/report/'+run+'/html');
  if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error('report mobile overflow');
  await page.screenshot({path:'tmp/reader-v2/mobile.png',fullPage:false});
  await page.setViewportSize({width:1200,height:1000});await page.screenshot({path:'tmp/reader-v2/desktop.png',fullPage:false});
+ if(hasAssessment){
+  await page.locator('.assessment-basis summary').first().click();
+  await page.locator('#assessment').screenshot({path:'tmp/reader-v2/assessment.png'});
+ }
  // Standalone file must retain interactions without localhost or remote requests.
  const exported=await (await page.request.get('http://127.0.0.1:8765/report/'+run+'/html')).body();
  fs.writeFileSync('tmp/reader-v2/offline.html',exported,{mode:0o600});

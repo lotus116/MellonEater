@@ -164,6 +164,19 @@ STORY_SCHEMA = schema_obj({
 })
 READER_SCHEMA = schema_obj({**READER_SCHEMA['properties'],'story':STORY_SCHEMA})
 PUBLISHED_SCHEMA = schema_obj({**REPORT_SCHEMA['properties'], 'reader': READER_SCHEMA})
+ASSESSMENT_ITEM = schema_obj({
+    'title': STR,
+    'observation': STR,
+    'source_ids': STRS,
+    'judgment': STR,
+    'inference': STR,
+    'counterpoint': STR,
+    'conflict_ids': STRS,
+})
+ASSESSMENT_READER_SCHEMA = schema_obj({
+    **READER_SCHEMA['properties'],
+    'assessment': {'type': 'array', 'items': ASSESSMENT_ITEM},
+})
 READER_RULES = (ROOT/'skills/chigua-analysis/references/report-editing.md').read_text(encoding='utf-8')
 
 
@@ -241,10 +254,22 @@ def validate_report(report, messages):
 
 
 def validate_reader(reader,messages):
-    validate_schema(reader,READER_SCHEMA if 'story' in reader else LEGACY_READER_SCHEMA)
+    if 'assessment' in reader:
+        schema = ASSESSMENT_READER_SCHEMA
+    else:
+        schema = READER_SCHEMA if 'story' in reader else LEGACY_READER_SCHEMA
+    validate_schema(reader,schema)
     if not reader['chapters'] or not reader['lead'].strip():raise ValueError('阅读版缺少正文。')
     lookup={m['id']:m for m in messages}
     refs=list(reader['verdict_source_ids'])
+    for item in reader.get('assessment', []):
+        if not item['source_ids'] or not all(item[key].strip() for key in ('title','observation','judgment')):
+            raise ValueError('行为判断需要具体观察、判断和原文编号。')
+        if item['inference'].strip() and not item['counterpoint'].strip():
+            raise ValueError('推测需要说明其他解释或推测的边界。')
+        if item['conflict_ids'] and not item['counterpoint'].strip():
+            raise ValueError('反证编号需要对应说明。')
+        refs.extend(item['source_ids'] + item['conflict_ids'])
     if 'story' in reader:
         story=reader['story']
         if not story['central_question'].strip() or not story['arc']:raise ValueError('阅读版缺少事件主线。')

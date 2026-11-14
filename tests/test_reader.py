@@ -28,6 +28,21 @@ class ReaderTests(unittest.TestCase):
     def test_fake_image_rejected(self):
         r=reader();r['chapters'][0]['image_id']='M1'
         with self.assertRaisesRegex(ValueError,'图片'):validate_reader(r,self.messages)
+    def test_behavior_section_follows_turns_and_links_counterevidence(self):
+        messages = self.messages + normalize_messages([{'id':'M2','text':'银行正在复核'}])
+        result = {**reader(), 'story':story(), 'assessment':[{
+            'title':'退款进度','observation':'甲说已经付款','source_ids':['M1'],
+            'judgment':'负责退款的人应主动交代进度。','inference':'可能是流程没走完。',
+            'counterpoint':'银行也在复核。','conflict_ids':['M2'],
+        }]}
+        validate_reader(result,messages)
+        html=report.reader_html({'messages':messages},{
+            'report':{'reader':result},'created_at':'2026-11-14T00:00:00Z',
+        })
+        self.assertLess(html.index('id="turns"'),html.index('id="assessment"'))
+        self.assertLess(html.index('id="assessment"'),html.index('id="unresolved"'))
+        self.assertIn('href="#source-M002"',html)
+        self.assertIn('id="source-M002"',html)
     def test_story_requires_sources(self):
         r=reader();r['story']=story();r['story']['arc'][0]['source_ids']=[]
         with self.assertRaisesRegex(ValueError,'缺少来源'):validate_reader(r,self.messages)

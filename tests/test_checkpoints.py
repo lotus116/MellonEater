@@ -198,6 +198,20 @@ class CheckpointTests(unittest.TestCase):
         with patch('urllib.request.urlopen',side_effect=urllib.error.HTTPError('https://example.test',429,'limited',{'Retry-After':'90'},None)) as http,patch('chigua.checkpoints.time.sleep') as sleep:
             with self.assertRaises(CallFailure):self.generate()
             self.assertEqual(http.call_count,1);sleep.assert_not_called()
+    def test_partial_http_response_requires_confirmation_before_replay(self):
+        from http.client import IncompleteRead
+
+        class BrokenResponse(Response):
+            def read(self):
+                raise IncompleteRead(b'')
+
+        with patch('urllib.request.urlopen',side_effect=lambda *a,**kw: BrokenResponse(b'')) as http:
+            with self.assertRaises(CallFailure) as error:
+                self.generate()
+            self.assertTrue(error.exception.uncertain)
+            with self.assertRaisesRegex(CallFailure,'计费未知'):
+                self.generate()
+            self.assertEqual(http.call_count,1)
     def test_inflight_disk_state_is_visible_after_restart_without_requests(self):
         core.write_json(self.folder/'job.json',{'id':'one','case_id':'synthetic','status':'running','stage':'editor_draft'})
         with patch.object(provider,'generate') as gen:

@@ -23,6 +23,13 @@ main { max-width: 860px; padding: 42px 60px; }
 .turn-detail p { margin: 10px 0 2px; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 28px; }
 .section-heading h2 { margin: 0; }
+.assessment-item { padding: 8px 0 16px; border-bottom: 1px solid var(--line); }
+.assessment-item h3 { margin: 8px 0; }
+.behavior-judgment { margin: 8px 0; }
+.behavior-judgment strong, .assessment-basis p strong { color: var(--green); }
+.assessment-basis > summary { width: fit-content; color: var(--accent); font-size: 15px; line-height: 2.6; }
+.assessment-basis p { margin: 8px 0; }
+#unresolved li { margin-bottom: 6px; }
 @media(max-width:650px) {
   main { padding: 18px 20px 36px; }
   .opening h1 { margin-top: 20px; }

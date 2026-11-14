@@ -1,5 +1,6 @@
 from __future__ import annotations
 import base64
+from http.client import IncompleteRead
 import json
 import os
 import shutil
@@ -223,7 +224,7 @@ def _generate_once(prompt, schema, run_dir: Path, stage, images=(), *, options=N
             except (ValueError,AttributeError):delay=0
             raise CallFailure(f'模型接口返回 HTTP {exc.code}；已保留进度。请检查接口、权限、余额或稍后继续。',
                 kind='http_'+str(exc.code),retryable=exc.code in [429,500,502,503],uncertain=exc.code==504,retry_after=delay) from None
-        except (TimeoutError,urllib.error.URLError,ConnectionError,OSError):
+        except (IncompleteRead,TimeoutError,urllib.error.URLError,ConnectionError,OSError):
             raise CallFailure('连接中断或等待超时，服务端可能已处理本次请求。进度已保存；确认后仅重试当前阶段。',kind='connection',uncertain=True) from None
         write_json(run_dir/'raw-response.json',obj)
         write_json(run_dir/'usage.json',obj.get('usage'))

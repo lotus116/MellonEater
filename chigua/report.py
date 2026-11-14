@@ -94,7 +94,7 @@ def cited_sources(case, reader, extra_ids=()):
     def visit(value):
         if isinstance(value,dict):
             for key,item in value.items():
-                if key.endswith('source_ids'):ids.update(item)
+                if key.endswith('source_ids') or key=='conflict_ids':ids.update(item)
                 elif key in ('quote_source_id','image_id') and item:ids.add(item)
                 else:visit(item)
         elif isinstance(value,list):
@@ -136,6 +136,7 @@ def supplement_note(message):
 
 def reader_html(case,run):
     r=run['report']['reader'];lookup={m['id']:m for m in case['messages']}
+    assessment = r.get('assessment', [])
     labels=source_labels(case);sources=cited_sources(case,r)
     def p(value):return '<p>'+escape(value)+'</p>'
     def refs(ids):
@@ -148,15 +149,25 @@ def reader_html(case,run):
         except FileNotFoundError:
             return '<p class="muted">本机图片文件已缺失。可继续核对文字记录。</p>'
         return '<button type="button" class="zoom-image" aria-label="放大 '+escape(caption)+'"><img src="'+uri+'" alt="'+escape(caption)+'"></button>'
+    def questions():
+        if not r['open_questions']:
+            return ''
+        return ('<section id="unresolved"><h2>还有哪些事没说清</h2><ul>'+
+                ''.join('<li>'+escape(q)+'</li>' for q in r['open_questions'])+'</ul></section>')
     asset_root=Path(__file__).resolve().parents[1]/'static'
     css=(asset_root/'reader.css').read_text();js=(asset_root/'reader.js').read_text()
-    minutes=max(1,(len(r['lead']+r['verdict'])+sum(len(p['text']) for c in r['chapters'] for p in c['paragraphs'])+449)//450)
+    reading_length = len(r['lead']+r['verdict']) + sum(len(p['text']) for c in r['chapters'] for p in c['paragraphs'])
+    reading_length += sum(len(item['judgment']) for item in assessment)
+    minutes = max(1, (reading_length + 449) // 450)
     parts=['<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
       '<link rel="icon" href="data:,"><title>'+escape(r['title'])+'</title><style>'+css+'</style><main id="top">',
       '<header class="masthead"><span>知瓜 <small>约 '+str(minutes)+' 分钟</small></span><button id="print-report" type="button" hidden>打印 / 存为 PDF</button></header>',
       '<div class="opening"><h1>'+escape(r['title'])+'</h1><p class="lead">'+escape(r['lead'])+'</p></div>',
       '<section class="now" id="now"><small>目前进展</small><h2>'+escape(r['verdict_title'])+'</h2>',p(r['verdict']),refs(r['verdict_source_ids']),'</section>',
-      '<nav class="reader-nav" aria-label="阅读导航">'+('<a href="#turns">关键转折</a>' if r.get('story') else '')+('<a href="#people">谁是谁</a>' if r['people'] else '')+'<a href="#details">详细经过</a><a href="#originals">核对原文</a></nav>']
+      '<nav class="reader-nav" aria-label="阅读导航">'+('<a href="#turns">关键转折</a>' if r.get('story') else '')+
+      ('<a href="#assessment">怎么看双方的做法</a>' if assessment else '')+
+      ('<a href="#unresolved">待确认</a>' if r['open_questions'] else '')+
+      '<a href="#details">详细经过</a><a href="#originals">核对原文</a></nav>']
     if r.get('story'):
         story=r['story']
         parts.extend(['<section id="turns"><h2>事情怎么发展</h2>',p(story['central_question'])])
@@ -164,6 +175,19 @@ def reader_html(case,run):
             parts.extend(['<details class="turn"><summary><span class="turn-number">'+str(i)+'</span><span><strong>'+escape(step['stage'])+'</strong><span class="turn-brief">'+escape(step['happened'])+'</span></span></summary>',
                           '<div class="turn-detail">'+p(step['changed'])+'<small>'+escape(step['order_basis'])+'</small>'+refs(step['source_ids'])+'</div></details>'])
         parts.append('<details class="scope"><summary>这些时间如何确定</summary>'+p(story['timeline_note'])+'</details></section>')
+    if assessment:
+        parts.append('<section id="assessment"><h2>怎么看双方的做法</h2>')
+        for item in assessment:
+            parts.extend(['<article class="assessment-item"><h3>'+escape(item['title'])+'</h3>',
+                          '<p class="behavior-judgment"><strong>行为判断</strong> '+escape(item['judgment'])+'</p>',
+                          '<details class="assessment-basis"><summary>看依据'+('和推测' if item['inference'] else '')+'</summary>',
+                          '<p><strong>记录里看到的</strong> '+escape(item['observation'])+'</p>',refs(item['source_ids'])])
+            if item['inference']:
+                parts.append('<p><strong>一种解释</strong> '+escape(item['inference'])+'</p>')
+            if item['counterpoint']:
+                parts.extend(['<p><strong>还要考虑</strong> '+escape(item['counterpoint'])+'</p>',refs(item['conflict_ids'])])
+            parts.append('</details></article>')
+        parts.extend(['</section>',questions()])
     if r['people']:
         parts.append('<section id="people"><h2>谁是谁</h2><div class="people">')
         for person in r['people']:parts.extend(['<div class="person"><strong>'+escape(person['name'])+'</strong>',p(person['role']),refs(person.get('source_ids',[])),'</div>'])
@@ -177,9 +201,9 @@ def reader_html(case,run):
         parts.append('</details>')
     parts.append('</section>')
     selected={m['id'] for m in sources}
-    claims=[c for c in run['report'].get('claims',[]) if selected.intersection(c['support_ids']+c['conflict_ids'])][:4]
+    claims=[] if assessment else [c for c in run['report'].get('claims',[]) if selected.intersection(c['support_ids']+c['conflict_ids'])][:4]
     sources=cited_sources(case,r,[mid for c in claims for mid in c['support_ids']+c['conflict_ids']])
-    if claims:
+    if claims and not assessment:
         parts.append('<section><h2>关键说法与依据</h2>')
         for c in claims:parts.extend(['<details class="dispute"><summary>'+escape(c['statement'])+'<small>'+escape(c['status'])+'</small></summary>',p(c['reason']),refs(c['support_ids']),p('反证与不同说法')+refs(c['conflict_ids']) if c['conflict_ids'] else '', '</details>'])
         parts.append('</section>')
@@ -187,8 +211,8 @@ def reader_html(case,run):
         parts.append('<details class="scope"><summary>相关线索</summary>')
         for thread in r['story']['threads']:parts.extend([p(thread['name']+'：'+thread['role_in_story']),refs(thread['source_ids'])])
         parts.append('</details>')
-    if r['open_questions']:
-        parts.append('<h2>还有哪些事没说清</h2><ul>');parts.extend('<li>'+escape(q)+'</li>' for q in r['open_questions']);parts.append('</ul>')
+    if not assessment:
+        parts.append(questions())
     parts.extend(['<details class="scope"><summary>整理范围与来源说明</summary>',p(source_note(case)),'<small>整理时间：'+escape(local_time(run.get('reader_updated_at',run['created_at'])))+'（香港时间）。</small></details>',
         '<section id="originals"><h2>原文附录 · 按需核对</h2>',p('以下为文中引用的完整材料及其父材料，不代表全部群记录。显示名、原文与图片可能含个人信息，仅供私下核对；编号表示本包顺序，不代表事件先后。'),
         '<div class="source-controls"><label for="source-search">搜索原文或发言者</label><input id="source-search" type="search" placeholder="例如：材料编号、关键词或名字"><p id="source-count" class="muted" role="status">共 '+str(len(sources))+' 条材料，点击展开</p></div>'])
