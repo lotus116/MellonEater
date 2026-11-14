@@ -58,6 +58,21 @@ class ReaderTests(unittest.TestCase):
         with patch('pathlib.Path.exists',return_value=True),patch.object(mac.subprocess,'run',side_effect=subprocess.TimeoutExpired('ocr',90)):
             lines,note=mac.ocr(Path('example.png'))
         self.assertEqual(lines,[]);self.assertIn('保留原图',note)
+    def test_pdf_counts_overview_overflow_instead_of_claiming_first_page(self):
+        try:
+            report.pdf_fonts()
+            from pypdf import PdfReader
+        except (ImportError,ValueError):self.skipTest('PDF runtime not available')
+        r=reader();r['story']=story()
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/'layout.pdf'
+            case={'messages':self.messages};run={'report':{'reader':r},'created_at':'2026-11-14T00:00:00Z'}
+            metrics=report.report_pdf(case,run,path)
+            self.assertEqual(metrics['overview_pages'],1)
+            self.assertEqual(metrics['pages'],len(PdfReader(path).pages))
+            r['story']['arc']=[dict(r['story']['arc'][0]) for _ in range(10)]
+            metrics=report.report_pdf(case,run,path)
+            self.assertGreater(metrics['overview_pages'],1)
 
 
 if __name__=='__main__':unittest.main()

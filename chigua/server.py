@@ -35,6 +35,10 @@ def get_run(rid):
         result['reader_updated_at']=edition.get('edited_at',edition.get('created_at',result['created_at']))
         result['reader_trace']=edition.get('trace')
         result['reader_editorial_review']=edition.get('editorial_review')
+        if edition.get('workflow_version'):
+            result['editorial_trace']=edition['trace']
+            result['editorial_quality']=edition['quality']
+            result['editorial_workflow']=edition['workflow_version']
     return result
 
 

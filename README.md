@@ -2,7 +2,7 @@
 
 把聊天里的事件、各方说法、证据和未知项放在一起，生成可以回查原文的争议分析报告。
 
-当前为 **macOS 本地 MVP**：上传或粘贴材料 → 本地规范化与截图 OCR → Codex / DeepSeek 分析 → 证据工作台 → HTML / PDF。微信历史自动读取仍在接入调研阶段。
+当前为 **macOS 本地 MVP**：上传或粘贴材料 → 本地规范化与截图 OCR → Codex / DeepSeek 分析 → 主线提纲 → 阅读稿 → 审稿与自动返修 → 证据工作台 / HTML / PDF。微信历史自动读取仍在接入调研阶段。
 
 ## 启动
 
@@ -24,9 +24,15 @@ python3 -m venv .venv
 
 1. 点击“导入聊天记录”。可粘贴 `【甲】：……` 格式文字，导入 TXT、JSON、JSONL，或上传 PNG/JPEG。
 2. 检查“全部材料”。程序保留材料编号、来源、图片和未知时间，不把段落当成原始微信消息。
-3. 在“模型与接入设置”中选择入口，点击“生成分析报告”。四阶段流程通常比单次提示更慢。
+3. 在“模型与接入设置”中选择入口，点击“生成分析报告”。所有方法均自动完成阅读稿编辑；页面显示主线提炼、审稿和返修进度。
 4. 点击材料编号查看原文；“证据清单”按支持状态筛选；“运行记录”保留不同方法的结果。
 5. 导出 PDF、含内嵌图片的独立 HTML 或 JSON。新报告先展示事件主线与阶段转折，再展开故事、解释支线作用，最后给出判断和待解问题；时间顺序的依据单独标记，完整判断清单与原图留在工作台。
+
+自动编辑先区分单一事件、并行事件和残缺片段，再写故事。审稿在新上下文中对照原材料，检查主线、时间、因果、反证、结局和隐私；程序检查引用、原话和首页排版。发现问题最多自动返修两轮，仍未通过就保留候选稿并报告失败。无需每次要求助手手工改写，也不会将未通过的稿件发布为完成报告。
+
+正常情况额外需要 3 次编辑调用，返修最多再加 4 次；提纲结构异常还可修复 1 次。耗时与模型用量会增加，分析与编辑分别记账。PDF 依赖或中文字体不可用时明确记录排版未检查，仍可生成 HTML；模型自审通过不等于现实事实已获认证。
+
+编辑规则由程序与 [项目 skill](skills/chigua-analysis/SKILL.md) 共用。旧报告也可以运行 `python scripts/reader-edition.py <run_id>` 自动重编；成功后才替换阅读版，原始分析和旧版留档。
 
 ## 模型切换
 
@@ -67,6 +73,7 @@ Mac 自动采集已准备好 GreenBubbles 完整 JSON 的受限适配器，**尚
 - `data/cases/`：不可变的输入材料包。
 - `data/uploads/`：上传原图。
 - `data/runs/<id>/`：输入快照、提示、模型结果、耗时、用量和失败记录。
+- `data/runs/<id>/analysis_report.json`：原始分析，供实验评分；`editorial/` 单独保存提纲、审稿、返修与排版检查，不能把润色后结果冒充原方法输出。
 - `data/samples/demo.json`：仓库自带的合成样例。
 - `skills/chigua-analysis/`：可复用的分析操作说明。
 
@@ -90,4 +97,4 @@ JSON 可使用 `{"messages":[{"id":"M1","speaker":"甲","text":"原文","timesta
 
 实施范围和接入路线见 [计划](docs/PLAN.md) 与 [Mac 接入调研](docs/MAC_ACCESS.md)。
 
-小规模行为检查可先运行 `python scripts/prepare-variants.py`，再运行 `python scripts/run-smoke.py --provider codex --method B1`。该操作会实际调用模型四次；预期行为和输出索引保存于被忽略的 `data/private/`，不把预期答案传给模型。验证记录见 [验收说明](docs/VALIDATION.md)。
+小规模行为检查可先运行 `python scripts/prepare-variants.py`，再运行 `python scripts/run-smoke.py --provider codex --method B1`。该操作会运行四个案例，每例包括分析与自动编辑；预期行为和输出索引保存于被忽略的 `data/private/`，不把预期答案传给模型。自动编辑跨案例检查运行 `python scripts/eval-editorial.py --provider codex`，使用三份完全虚构的新材料，结果和 PDF 仅留本地。验证记录见 [验收说明](docs/VALIDATION.md)。

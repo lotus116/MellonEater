@@ -157,20 +157,7 @@ STORY_SCHEMA = schema_obj({
 })
 READER_SCHEMA = schema_obj({**READER_SCHEMA['properties'],'story':STORY_SCHEMA})
 PUBLISHED_SCHEMA = schema_obj({**REPORT_SCHEMA['properties'], 'reader': READER_SCHEMA})
-READER_RULES = '''同时输出 reader，供人类顺着阅读的吃瓜报告：
-先还原外部事件的主线，不要按聊天截图顺序逐段解释，也不要把每个争点写成独立故事。
-标题应概括冲突如何发展，不用“几张截图说明了什么”作为主角。deck 点出从哪种分歧变成哪种冲突；lead 约100字交代人物、起因、关键转折、当前结果。
-story.central_question 用一句话说明推动故事的问题。story.arc 用4至5个阶段还原起因、升级、转折、收场：每项 happened 不超过60中文字，是实际发生或当事人回述的事件；changed 不超过30字，解释它改变了什么，不要只写“谁发了一条消息”。
-arc 必须逐项标 order_basis。只在有时间戳或可靠上下文时确定先后；“材料提交顺序”不是发生顺序，“多条指控同时出现”不是因果。timeline_note 集中说明不能串成全局时间线的部分。不要为讲顺故事虚构动机、衔接或日期。
-story.threads 用2条支线解释贡献、尊重等争点如何被带入主线、起了什么作用，每项不超过80字，不能仅罗列支持/反证。主线与支线应让读者理解事件结构，而非一张主张审计表。
-people 最多3项角色，role 每项不超过16字，不保留真实姓名。标题尽量18字以内；lead 不超过110字；timeline_note 不超过120字，其他材料限制放在 open_questions 或来源说明。
-chapters 2至3章，每章2个短段落，总正文约600至850中文字。重点讲主线图未充分展开的关键转折、升级机制、结局；不要再次逐项复述时间线。每章不是一个证据争点的裁判意见。行文把事件放在主语位置，不反复用“截图显示”“材料支持”“现有证据不足”开头，不在正文堆 IMG/M 编号。
-不确定性要保留，但集中说明共同限制，避免每句话都用免责声明打断。推断必须表明是归纳，不能把推测写成事实。
-最多选择1张真正改变主线判断的截图，image_id 只能用确实带 image 字段的编号；其他原图在工作台回查，没有必要的图片就留空。
-每段关联支持它的 source_ids。精选原话必须逐字来自原材料；quote_text、quote_speaker、quote_source_id 没有时都留空。
-不要堆叠“主张/支持/反证/标准”的审计表；在自然叙述中说明谁声称什么、截图显示什么、哪些还不知道。
-verdict 以明确且有证据的判断收束，可以不对称，但要说明依据。不要用“双方都有错”代替具体评价。
-open_questions 保留最重要的2至4个未知项。未展示完整记录或音频时，不把截图转写当作完整事实。'''
+READER_RULES = (ROOT/'skills/chigua-analysis/references/report-editing.md').read_text(encoding='utf-8')
 
 
 def validate_schema(value, schema, path='结果'):

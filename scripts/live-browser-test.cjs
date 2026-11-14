@@ -16,7 +16,7 @@ await page.locator('details').filter({has:page.locator('#method')}).locator('sum
 await page.waitForFunction(()=>document.querySelector('#analyze').disabled);
 console.log('Live model started through browser; checking refresh recovery');
 await page.reload();await page.waitForFunction(()=>document.querySelector('#feedback').textContent.includes('分析'));
-await page.waitForFunction(()=>document.querySelector('#feedback').textContent.includes('报告已生成')||document.querySelector('#feedback').classList.contains('error'),null,{timeout:600000});
+await page.waitForFunction(()=>document.querySelector('#feedback').textContent.includes('报告已生成')||document.querySelector('#feedback').classList.contains('error'),null,{timeout:3600000});
 if(await page.locator('#feedback').evaluate(e=>e.classList.contains('error')))throw Error(await page.locator('#feedback').innerText());
 await page.locator('.reader-title').waitFor();await page.locator('[data-ref]').first().click();await page.locator('.evidence-card img').waitFor();
 const cid=new URL(page.url()).searchParams.get('case');const obj=await(await page.request.get('/api/cases/'+cid)).json();const rid=obj.runs[0].id;if(!obj.case.messages[0].ocr_lines.length)throw Error('Local OCR returned no lines');

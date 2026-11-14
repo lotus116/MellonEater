@@ -179,7 +179,15 @@ def reader_pdf(case,run,path):
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, KeepTogether, HRFlowable, PageBreak
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, KeepTogether, HRFlowable, PageBreak, Flowable
+    metrics={'pages':0,'overview_pages':0,'last_page_fill':0}
+    class ReaderDocument(SimpleDocTemplate):
+        def afterFlowable(self,flowable):
+            if isinstance(flowable,(Paragraph,Table,Image,HRFlowable)):
+                metrics['last_page_fill']=round((self.frame._y2-self.frame._topPadding-self.frame._y)/self.frame._aH,3)
+    class OverviewEnd(Flowable):
+        def wrap(self,*args):return (0,0)
+        def draw(self):metrics['overview_pages']=self.canv.getPageNumber()
     fonts=pdf_fonts()
     ink=colors.HexColor('#213047');muted=colors.HexColor('#5a687b');accent=colors.HexColor('#4350ae')
     def style(name,size,leading,**kw):
@@ -224,7 +232,7 @@ def reader_pdf(case,run,path):
             ('LINEBELOW',(0,0),(-1,-2),.5,colors.HexColor('#dfe4ed')),
             ('LEFTPADDING',(0,0),(-1,-1),7),('RIGHTPADDING',(0,0),(-1,-1),9),
             ('TOPPADDING',(0,0),(-1,-1),8),('BOTTOMPADDING',(0,0),(-1,-1),4)]))
-        story.extend([table,Spacer(1,8),p(spine['timeline_note'],small),PageBreak()])
+        story.extend([table,Spacer(1,8),p(spine['timeline_note'],small),OverviewEnd(),PageBreak()])
     for chapter in r['chapters']:
         story.append(p(chapter['title'],heading))
         refs=[]
@@ -247,13 +255,15 @@ def reader_pdf(case,run,path):
     if r['open_questions']:
         story.append(p('还有哪些地方没说清',heading))
         for x in r['open_questions']:story.append(p('• '+x))
-    story.extend([Spacer(1,14),HRFlowable(width='100%',thickness=.5,color=colors.HexColor('#d5dce6'),spaceAfter=12),
+    story.append(KeepTogether([Spacer(1,14),HRFlowable(width='100%',thickness=.5,color=colors.HexColor('#d5dce6'),spaceAfter=12),
         p('关于这份整理',small),p(case.get('source_note',''),small),
         p('这是对现有材料的还原与评价，不是对记录外全部事实的认证。文中编号可在本地工作台回查原文；完整证据清单和运行信息保留在工作台。',small),
-        p('整理时间：'+local_time(run.get('reader_updated_at',run['created_at']))+'（香港时间）',small)])
+        p('整理时间：'+local_time(run.get('reader_updated_at',run['created_at']))+'（香港时间）',small)]))
     def footer(canvas,doc):
+        metrics['pages']=max(metrics['pages'],doc.page)
         canvas.setFont(fonts['ui'],8);canvas.setFillColor(muted)
         canvas.drawString(50,25,'知瓜 / 私密材料阅读版');canvas.drawRightString(545,25,str(doc.page))
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
-    SimpleDocTemplate(str(path),pagesize=(595.28,841.89),leftMargin=50,rightMargin=50,topMargin=42,bottomMargin=45,
+    ReaderDocument(str(path),pagesize=(595.28,841.89),leftMargin=50,rightMargin=50,topMargin=42,bottomMargin=45,
         title=r['title'],author='知瓜').build(story,onFirstPage=footer,onLaterPages=footer)
+    return metrics
