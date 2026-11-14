@@ -33,7 +33,9 @@ python -m chigua.cli resume <run_id> --max-requests 25
 
 用量从供应商响应统计，缓存复用不重复计入；记录输入、输出、服务端缓存命中及用量未知的请求数，不把未知当零。DeepSeek 的服务端前缀缓存只降低符合条件的输入成本，仍可能计费，也不保证每次命中。将稳定材料置于变化任务之前，使重复前缀有机会被复用；本地完整结果缓存才是跳过请求。
 
-参考：[DeepSeek 上下文缓存](https://api-docs.deepseek.com/guides/kv_cache/)、[错误码](https://api-docs.deepseek.com/quick_start/error_codes/)、[Chat Completions 的格式及用量](https://api-docs.deepseek.com/api/create-chat-completion/)。核对日期：2026-11-14。本轮使用模拟接口验收，尚未进行用户真实 DeepSeek 账户与余额验证。
+DeepSeek 默认显式关闭深度思考，仍分步骤成稿和审稿。设置中可以开启低/高强度思考，但它与正文共用单步 12,000 输出 token 上限；更改方式需要新建分析，不混用旧参数缓存。用量栏中的思考 token 是输出的子集。实际带图材料曾在未显式控制思考时耗尽该上限，程序停止，没有盲重试。
+
+参考：[DeepSeek 上下文缓存](https://api-docs.deepseek.com/guides/kv_cache/)、[错误码](https://api-docs.deepseek.com/quick_start/error_codes/)、[Chat Completions 的格式及用量](https://api-docs.deepseek.com/api/create-chat-completion/)。核对日期：2026-11-14。现已完成真实 DeepSeek 小样本及本地故障注入验证，详见 [实际调用记录](DEEPSEEK_LIVE_VALIDATION-2026-11-14.md)；金额未与账户账单核对。
 
 ## 同一份内容，多种阅读方式
 

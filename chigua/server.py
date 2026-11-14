@@ -257,6 +257,8 @@ class Handler(BaseHTTPRequestHandler):
                 kind=obj.get('provider')
                 if kind not in ['codex','deepseek','api','manual']:
                     raise ValueError('模型入口无效。')
+                thinking=obj.get('deepseek_thinking','disabled')
+                if thinking not in ['disabled','low','high']:raise ValueError('DeepSeek 思考设置无效。')
                 model=str(obj.get('model','')).strip()
                 if kind in ['api','deepseek'] and not model:
                     raise ValueError('请填写模型名称。')
@@ -268,6 +270,7 @@ class Handler(BaseHTTPRequestHandler):
                 if kind!=os.environ.get('CHIGUA_PROVIDER') or base!=os.environ.get('CHIGUA_BASE_URL',''):
                     os.environ.pop('CHIGUA_API_KEY',None)
                 os.environ['CHIGUA_PROVIDER']=kind
+                os.environ['CHIGUA_DEEPSEEK_THINKING']=thinking
                 if model: os.environ['CHIGUA_MODEL']=model
                 else: os.environ.pop('CHIGUA_MODEL',None)
                 os.environ['CHIGUA_BASE_URL']=base

@@ -75,6 +75,14 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(config['model']['has_key']);self.assertNotIn('example-test-key',json.dumps(config))
         self.request('/api/settings',{'provider':'api','model':'other','base_url':'https://example.com/v1'})
         self.assertFalse(self.request('/api/config')[1]['model']['has_key'])
+    def test_thinking_change_preserves_secret_and_rejects_invalid_mode(self):
+        settings={'provider':'deepseek','model':'deepseek-flash','base_url':'https://api.deepseek.com'}
+        self.request('/api/settings',{**settings,'api_key':'synthetic-secret','deepseek_thinking':'low'})
+        code,result=self.request('/api/settings',{**settings,'deepseek_thinking':'disabled'})
+        self.assertEqual(code,200);self.assertTrue(result['has_key'])
+        self.assertEqual(result['deepseek_thinking'],'disabled')
+        self.assertNotIn('synthetic-secret',json.dumps(result))
+        self.assertEqual(self.request('/api/settings',{**settings,'deepseek_thinking':'invalid'})[0],400)
     def test_invalid_result_never_becomes_run(self):
         _,case=self.request('/api/cases',{'title':'x','text':'【甲】：x'})
         code,data=self.request('/api/import-result',{'case_id':case['id'],'report':{'title':'bad'}})

@@ -21,6 +21,7 @@ def status():
             'model': os.getenv('CHIGUA_MODEL', '本机 Codex 默认模型' if provider == 'codex' else '未配置'),
             'base_url': os.getenv('CHIGUA_BASE_URL', ''),
             'has_key': bool(os.getenv('CHIGUA_API_KEY')),
+            'deepseek_thinking': os.getenv('CHIGUA_DEEPSEEK_THINKING','disabled'),
             'note': '云端分析会发送当前案例的文字与所选图片；不会自动读取其他聊天。'}
 
 
@@ -60,9 +61,19 @@ def api_base():
 
 def config_identity():
     s=status()
-    return {'provider':s['provider'],'model':s['model'],
+    config={'provider':s['provider'],'model':s['model'],
         'base_url':api_base(),
         'max_tokens':12000,'transport_version':3}
+    if s['provider']=='deepseek':config['deepseek_options']=deepseek_options()
+    return config
+
+
+def deepseek_options():
+    mode=os.getenv('CHIGUA_DEEPSEEK_THINKING','disabled')
+    if mode not in ['disabled','low','high']:
+        raise ValueError('DeepSeek 思考设置无效，尚未发出请求。')
+    if mode=='disabled':return {'thinking':{'type':'disabled'}}
+    return {'thinking':{'type':'enabled'},'reasoning_effort':mode}
 
 
 def generate(prompt, schema, run_dir: Path, stage, images=()):
@@ -147,7 +158,7 @@ def _generate_once(prompt, schema, run_dir: Path, stage, images=()):
             payload['response_format'] = ({'type': 'json_object'} if config['provider'] == 'deepseek' else
                 {'type': 'json_schema', 'json_schema': {'name': 'chigua_output', 'strict': True, 'schema': schema}})
         if config['provider'] == 'deepseek':
-            payload['max_tokens'] = 12000
+            payload.update(deepseek_options())
         req = urllib.request.Request(base+'/chat/completions', data=json.dumps(payload).encode(),
             headers={'Content-Type': 'application/json', 'Authorization': 'Bearer '+os.environ['CHIGUA_API_KEY']})
         try:
@@ -166,7 +177,10 @@ def _generate_once(prompt, schema, run_dir: Path, stage, images=()):
         write_json(run_dir/'raw-response.json',obj)
         choice = obj['choices'][0]
         if choice.get('finish_reason') == 'length':
-            raise CallFailure('模型输出达到长度上限，原始响应与用量已保存。请调整输出要求后继续，避免原样重试再次截断。',kind='output_length')
+            details=(obj.get('usage') or {}).get('completion_tokens_details') or {}
+            note=(' 本次尚未返回正文，思考已用 '+str(details['reasoning_tokens'])+' token；可在设置中关闭深度思考后明确新建分析。'
+                  if not choice.get('message',{}).get('content') and details.get('reasoning_tokens') else '')
+            raise CallFailure('模型输出达到长度上限，原始响应与用量已保存。请调整输出要求，避免原样重试再次截断。'+note,kind='output_length')
         raw = choice['message']['content']
         if not raw or not raw.strip():
             raise RuntimeError('模型返回了空内容，未生成报告。可以重试或调整模型。')

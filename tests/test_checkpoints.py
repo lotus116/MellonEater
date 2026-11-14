@@ -128,6 +128,14 @@ class CheckpointTests(unittest.TestCase):
         result=usage_summary(self.folder)
         self.assertEqual(result['input_tokens'],5);self.assertEqual(result['output_tokens'],3)
         self.assertEqual(result['unknown_usage_requests'],2);self.assertEqual(result['cached_input_tokens'],0)
+    def test_reasoning_usage_is_a_subset_of_output_not_added_twice(self):
+        p=self.folder/'.calls'/'reasoning'/'attempt-0001'
+        core.write_json(p/'attempt.json',{'status':'failed'})
+        core.write_json(p/'usage.json',{'prompt_tokens':10,'completion_tokens':12000,'completion_tokens_details':{'reasoning_tokens':12000}})
+        usage=usage_summary(self.folder)
+        self.assertEqual(usage['output_tokens'],12000)
+        self.assertEqual(usage['reasoning_tokens'],12000)
+        self.assertEqual(usage['unknown_usage_requests'],0)
     def test_rotated_key_reuses_completed_result_and_never_stores_secret(self):
         with patch.object(provider,'_generate_once',return_value=({},STATS)) as gen:
             self.generate()

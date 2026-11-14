@@ -54,10 +54,14 @@ def usage_summary(folder):
     def cached(u):
         details=u.get('prompt_tokens_details') or {}
         return number(u,'prompt_cache_hit_tokens') or (number(details,'cached_tokens') if isinstance(details,dict) else 0)
+    def reasoning(u):
+        details=u.get('completion_tokens_details') or {}
+        return number(details,'reasoning_tokens') if isinstance(details,dict) else 0
     return {'requests':len(rows),'completed_requests':sum(r.get('status')=='completed' for r in rows),
         'unknown_usage_requests':sum(not complete_usage(r.get('usage')) for r in rows),
         'input_tokens':sum(number(r.get('usage') or {},'prompt_tokens','input_tokens') for r in rows),
         'output_tokens':sum(number(r.get('usage') or {},'completion_tokens','output_tokens') for r in rows),
+        'reasoning_tokens':sum(reasoning(r.get('usage') or {}) for r in rows),
         'cached_input_tokens':sum(cached(r.get('usage') or {}) for r in rows)}
 
 

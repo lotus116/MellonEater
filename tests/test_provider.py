@@ -7,7 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
-from chigua.provider import generate, parse_json
+from chigua.provider import generate, parse_json, config_identity
 
 
 class Response(BytesIO):
@@ -31,6 +31,19 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(captured['body']['response_format'],{'type':'json_object'})
         self.assertEqual(captured['url'],'https://api.deepseek.com/chat/completions')
         self.assertTrue(out['ok']);self.assertEqual(stats['usage']['prompt_tokens'],4)
+        self.assertEqual(captured['body']['thinking'],{'type':'disabled'})
+    def test_deepseek_thinking_is_explicit_and_in_checkpoint_identity(self):
+        with patch.dict(os.environ,{'CHIGUA_DEEPSEEK_THINKING':'low','CHIGUA_PROVIDER':'deepseek'}):
+            captured,_,_=self.call('{"ok":true}')
+            low=config_identity()
+        self.assertEqual(captured['body']['thinking'],{'type':'enabled'})
+        self.assertEqual(captured['body']['reasoning_effort'],'low')
+        with patch.dict(os.environ,{'CHIGUA_DEEPSEEK_THINKING':'disabled','CHIGUA_PROVIDER':'deepseek'}):
+            self.assertNotEqual(low,config_identity())
+    def test_invalid_thinking_setting_stops_before_http(self):
+        with patch.dict(os.environ,{'CHIGUA_DEEPSEEK_THINKING':'invalid'}),patch('urllib.request.urlopen') as http:
+            with self.assertRaisesRegex(ValueError,'思考设置无效'):self.call('{"ok":true}')
+            http.assert_not_called()
     def test_blank_is_failure(self):
         with self.assertRaisesRegex(RuntimeError,'空内容'):self.call('   ')
     def test_truncated_is_failure(self):
