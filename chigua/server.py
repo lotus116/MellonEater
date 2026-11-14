@@ -296,14 +296,15 @@ def reload_worker():
     if any(j['status']=='running' for j in pipeline.JOBS.values()):raise ValueError('任务运行时不能更新流程。')
     fd=pipeline.worker_lock()
     try:
-        for name in ['core','checkpoints','provider','editor','compact','pipeline','evaluation']:
+        for name in ['core','checkpoints','provider','editor','report','compact','pipeline','evaluation']:
             importlib.reload(importlib.import_module('chigua.'+name))
         import sys
         # Keep the live handler's existing guard/token. Refresh its POST routes
         # so later maintenance does not require exporting an in-memory key.
         owner=sys.modules.get('__main__')
         if owner and getattr(owner,'Handler',None) and owner.Handler.__module__=='__main__':
-            owner.Handler.do_POST=importlib.reload(importlib.import_module('chigua.server')).Handler.do_POST
+            updated=importlib.reload(importlib.import_module('chigua.server')).Handler
+            owner.Handler.do_POST=updated.do_POST
         return {'workflow':pipeline.compact.VERSION,'status':'reloaded','model_requests':0}
     finally:fcntl.flock(fd,fcntl.LOCK_UN);os.close(fd)
 

@@ -105,6 +105,8 @@ def _call_locked(prompt,schema,folder,stage,images,config,media,execute,recover=
                 return value,stats
         if (last.get('status')=='running' or last.get('uncertain')) and not policy.get('retry_uncertain'):
             raise CallFailure('上次请求中断，当前阶段是否已计费未知。确认后可仅重试这一步。',kind='interrupted',uncertain=True)
+        if 'stage_options' in config and last.get('kind') in {'invalid_output','output_length'}:
+            raise CallFailure(last.get('message','已读取该步骤保存的失败记录。'),kind=last['kind'])
     if policy.get('retry_uncertain'):
         policy.pop('retry_uncertain');write_json(manifest,policy)
     if policy.get('local_only'):
@@ -130,7 +132,8 @@ def _call_locked(prompt,schema,folder,stage,images,config,media,execute,recover=
         except Exception as exc:
             kind=getattr(exc,'kind','invalid_output')
             write_json(attempt/'attempt.json',{**record,'status':'failed','ended_at':now(),
-                'kind':kind,'uncertain':getattr(exc,'uncertain',False)})
+                'kind':kind,'uncertain':getattr(exc,'uncertain',False),
+                **({'message':str(exc)} if isinstance(exc,CallFailure) else {})})
             if not getattr(exc,'retryable',False) or retry==2 or getattr(exc,'retry_after',0)>30:raise
             time.sleep(max(getattr(exc,'retry_after',0),min(2**retry+random.random(),8)))
     raise AssertionError('unreachable')

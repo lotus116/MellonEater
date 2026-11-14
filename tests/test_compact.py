@@ -25,7 +25,7 @@ class CompactTests(unittest.TestCase):
     def tearDown(self):self.tmp.cleanup()
     def run_flow(self,outputs):
         def gen(*args,**kwargs):return copy.deepcopy(next(outputs)),{'model':'test','seconds':0}
-        with patch.object(provider,'generate',side_effect=gen) as calls,patch.object(compact,'layout_probe',return_value={'status':'checked','pages':2}):
+        with patch.object(provider,'generate',side_effect=gen) as calls:
             result=compact.execute(self.case,self.folder)
         return result,calls
     def test_text_report_is_new_compose_and_audit_with_lossless_refs(self):
@@ -33,12 +33,21 @@ class CompactTests(unittest.TestCase):
         self.assertEqual([c.args[3] for c in calls.call_args_list],['compose','audit_0'])
         self.assertEqual(result['report']['reader']['verdict_source_ids'],['M0001'])
         self.assertTrue((self.folder/'accepted.json').exists())
-        self.assertEqual(calls.call_args_list[1].kwargs['options']['thinking'],'low')
-    def test_pdf_failure_does_not_trigger_paid_rewrite_or_block_web_report(self):
-        with patch.object(provider,'generate',side_effect=[(composed(),{}),({'decision':'pass','issues':[]},{})]) as gen,patch.object(compact,'layout_probe',side_effect=OSError('temporary PDF failure')):
-            result=compact.execute(self.case,self.folder)
-        self.assertEqual(gen.call_count,2);self.assertEqual(result['quality']['layout']['status'],'unavailable')
+        self.assertEqual(calls.call_args_list[1].kwargs['options']['thinking'],'disabled')
+    def test_invalid_compose_repairs_before_audit_and_publishes_web_report(self):
+        invalid=composed()
+        invalid['reader']['verdict_source_ids']=['S404']
+        result,calls=self.run_flow(iter([invalid,composed(),{'decision':'pass','issues':[]}]))
+        self.assertEqual([c.args[3] for c in calls.call_args_list],['compose','compose_repair','audit_0'])
+        self.assertEqual(result['quality']['layout']['status'],'web_checked')
         self.assertTrue((self.folder/'accepted.json').exists())
+    def test_truncated_audit_is_repaired_without_rewriting_compose(self):
+        outputs=[(composed(),{}),CallFailure('截断',kind='output_length'),({'decision':'pass','issues':[]},{})]
+        with patch.object(provider,'generate',side_effect=outputs) as calls:
+            result=compact.execute(self.case,self.folder)
+        self.assertEqual(result['quality']['status'],'passed')
+        self.assertEqual([c.args[3] for c in calls.call_args_list],['compose','audit_0','audit_contract_fix_0'])
+        self.assertEqual(calls.call_args_list[-1].kwargs['options']['thinking'],'disabled')
     def test_images_only_go_to_observation_and_audit_not_writer(self):
         self.case['messages'][0]['image']='synthetic.png'
         vision={'observations':[{'source_id':'S001','visible_text':'我付了钱','visible_time':'昨天','description':'收据','uncertainty':''}]}

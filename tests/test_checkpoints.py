@@ -71,6 +71,13 @@ class CheckpointTests(unittest.TestCase):
         with patch.object(provider,'_generate_once') as gen:
             with self.assertRaisesRegex(CallFailure,'缓存损坏'):self.generate()
             gen.assert_not_called()
+    def test_returned_invalid_stage_replays_same_failure_without_new_request(self):
+        with patch.object(provider,'_generate_once',side_effect=CallFailure('输出已截断',kind='output_length')) as gen:
+            for _ in range(2):
+                with self.assertRaisesRegex(CallFailure,'输出已截断'):
+                    provider.generate('same',None,self.folder,'compose',options={})
+            self.assertEqual(gen.call_count,1)
+        self.assertEqual(usage_summary(self.folder)['requests'],1)
     def test_crash_inflight_requires_explicit_retry(self):
         with patch.object(provider,'_generate_once',side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):self.generate()

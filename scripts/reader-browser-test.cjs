@@ -15,6 +15,7 @@ const fs=require('node:fs');
  if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error('workspace mobile overflow');
  await page.goto('http://127.0.0.1:8765/report/'+run+'/html');await page.locator('h1').waitFor();
  if(await page.evaluate(()=>[...document.querySelectorAll('a[href^="#"]')].some(a=>!document.getElementById(a.hash.slice(1)))))throw Error('missing internal target');
+ if(!await page.locator('.turn:not([open]) .turn-brief').first().isVisible())throw Error('turn summary must be readable without opening');
  const initially=await page.locator('.chapter[open]').count();if(initially!==0)throw Error('chapters should start compact');
  await page.getByRole('button',{name:'展开详细经过',exact:true}).click();
  if(await page.locator('.chapter:not([open])').count())throw Error('expand not applied (CSP?)');
@@ -42,6 +43,16 @@ const fs=require('node:fs');
  await page.goto('file://'+process.cwd()+'/tmp/reader-v2/offline.html');
  await page.getByRole('button',{name:'展开详细经过',exact:true}).click();
  if(await page.locator('.chapter[open]').count()===0)throw Error('offline interaction failed');
+ await page.getByRole('button',{name:'收起详细经过',exact:true}).click();
+ await page.locator('#source-search').fill('no-such-source-for-print-test');
+ if(await page.locator('.original:not([hidden])').count())throw Error('test filter did not hide original sources');
+ await page.evaluate(()=>{window.print=()=>window.dispatchEvent(new Event('test-print-triggered'));});
+ await Promise.all([
+  page.evaluate(()=>new Promise(resolve=>addEventListener('test-print-triggered',resolve,{once:true}))),
+  page.getByRole('button',{name:'打印 / 存为 PDF'}).click(),
+ ]);
+ await page.pdf({path:'tmp/reader-v2/print.pdf',preferCSSPageSize:true,printBackground:true});
+ if(await page.locator('.chapter[open],.original:not([hidden])').count())throw Error('print did not restore screen state');
  if(errors.length)throw Error(errors.join('\n'));if(remote.filter(x=>!x.startsWith('file:')).length)throw Error('unexpected network');
  console.log('PASS: desktop/mobile reading, expandable stages/chapters, citations, original search, image zoom, offline HTML, no external requests.');
  await browser.close();

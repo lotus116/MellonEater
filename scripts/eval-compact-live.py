@@ -24,9 +24,9 @@ def main():
     parser.add_argument('--inject-local-failure',action='store_true')
     args=parser.parse_args()
     records=ROOT/'data/private/compact-eval';records.mkdir(parents=True,exist_ok=True)
-    manifests=list(records.glob('*.json'))
+    manifests=list(records.glob(VERSION+'-*.json'))
     spent=sum(sum(usage_summary(ROOT/'data/runs'/json.loads(p.read_text())['run_id'])[k] for k in ['input_tokens','output_tokens']) for p in manifests)
-    if spent>=45000:raise SystemExit('Synthetic suite reached its recorded-token threshold; no request sent.')
+    if spent>=24000:raise SystemExit('This version reached its synthetic suite token threshold; no request sent.')
     output=records/(VERSION+'-'+args.sample+'.json')
     if output.exists():raise SystemExit('This sample already has a recorded run; inspect it rather than re-pay automatically.')
     config=api('/api/config');assert config['model']['provider']=='deepseek' and config['model']['available']
@@ -42,7 +42,7 @@ def main():
             if m.pop('image_fixture',False):m['image']=asset['image']
     case=api('/api/cases',{'title':fixture['title'],'question':fixture['question'],'messages':messages,
                           'source_note':'完全虚构的流程验证材料；未展示的资料不可补造。'})
-    job=api('/api/analyze',{'case_id':case['id'],'method':'B1','max_requests':6,'max_total_tokens':min(18000,45000-spent)})
+    job=api('/api/analyze',{'case_id':case['id'],'method':'B1','max_requests':6,'max_total_tokens':min(16000,24000-spent)})
     manifest={'sample':args.sample,'case_id':case['id'],'run_id':job['id'],
               'expected_private_oracle':fixture['expected_private_oracle'],'fault_injected':args.inject_local_failure}
     write_json(output,manifest)

@@ -118,14 +118,21 @@ def generate(prompt, schema, run_dir: Path, stage, images=(), *, options=None):
 def recover_response(schema,attempt,stage):
     """Recover a durably received response after a crash before checkpoint commit."""
     response=attempt/'raw-response.json'
+    if not response.exists():
+        response=attempt/'response-body.txt'
     if not response.exists():return None
-    obj=json.loads(response.read_text());choice=obj['choices'][0]
+    obj=json.loads(response.read_text())
+    choices=obj.get('choices') if isinstance(obj,dict) else None
+    if not choices:return None
+    choice=choices[0]
     if choice.get('finish_reason') not in ['stop',None]:return None
     raw=choice['message']['content']
     if not raw or not raw.strip():return None
     value=parse_json(raw) if schema else raw
     value,repairs=normalize_empty_presentation(value,schema)
     if schema:validate_schema(value,schema)
+    if not (attempt/'usage.json').exists():
+        write_json(attempt/'usage.json',obj.get('usage'))
     config=status()
     return value,{'provider':config['provider'],'model':config['model'],'seconds':0,
         'usage':obj.get('usage'),'cost':None,'recovered_response':True,'local_format_repairs':repairs}
@@ -207,7 +214,10 @@ def _generate_once(prompt, schema, run_dir: Path, stage, images=(), *, options=N
             with urllib.request.urlopen(req, timeout=300) as response:
                 body=response.read()
                 (run_dir/'response-body.txt').write_bytes(body)
-                obj=json.loads(body)
+                try:
+                    obj=json.loads(body)
+                except ValueError:
+                    raise CallFailure('接口返回的响应无法解析，已保存原始内容。',kind='invalid_output') from None
         except urllib.error.HTTPError as exc:
             try:delay=float(exc.headers.get('Retry-After','0'))
             except (ValueError,AttributeError):delay=0
@@ -215,22 +225,30 @@ def _generate_once(prompt, schema, run_dir: Path, stage, images=(), *, options=N
                 kind='http_'+str(exc.code),retryable=exc.code in [429,500,502,503],uncertain=exc.code==504,retry_after=delay) from None
         except (TimeoutError,urllib.error.URLError,ConnectionError,OSError):
             raise CallFailure('连接中断或等待超时，服务端可能已处理本次请求。进度已保存；确认后仅重试当前阶段。',kind='connection',uncertain=True) from None
-        write_json(run_dir/'usage.json',obj.get('usage'))
         write_json(run_dir/'raw-response.json',obj)
-        choice = obj['choices'][0]
+        write_json(run_dir/'usage.json',obj.get('usage'))
+        choices=obj.get('choices') if isinstance(obj,dict) else None
+        if not choices:
+            raise CallFailure('模型返回内容缺失，已保存响应。',kind='invalid_output')
+        choice = choices[0]
         if choice.get('finish_reason') == 'length':
             details=(obj.get('usage') or {}).get('completion_tokens_details') or {}
             note=(' 本次尚未返回正文，思考已用 '+str(details['reasoning_tokens'])+' token；可在设置中关闭深度思考后明确新建分析。'
                   if not choice.get('message',{}).get('content') and details.get('reasoning_tokens') else '')
             raise CallFailure('模型输出达到长度上限，原始响应与用量已保存。请调整输出要求，避免原样重试再次截断。'+note,kind='output_length')
-        raw = choice['message']['content']
+        raw = (choice.get('message') or {}).get('content')
         if not raw or not raw.strip():
-            raise RuntimeError('模型返回了空内容，未生成报告。可以重试或调整模型。')
+            raise CallFailure('模型返回了空内容，已保存响应。',kind='invalid_output')
         usage = obj.get('usage')
         (run_dir / f'{stage}.response.txt').write_text(raw, encoding='utf-8')
     write_json(run_dir/'usage.json',usage)
-    value=parse_json(raw) if schema else raw
-    value,repairs=normalize_empty_presentation(value,schema)
-    if schema:validate_schema(value,schema)
+    try:
+        value=parse_json(raw) if schema else raw
+        value,repairs=normalize_empty_presentation(value,schema)
+        if schema:validate_schema(value,schema)
+    except ValueError:
+        if options is None:
+            raise
+        raise CallFailure('模型输出格式不完整，原始响应与用量已保存。',kind='invalid_output') from None
     return value, {'provider': config['provider'], 'model': config['model'],
         'seconds': round(time.monotonic()-started, 2), 'usage': usage, 'cost': None,'local_format_repairs':repairs}
