@@ -7,9 +7,15 @@ from test_core import valid_report
 from test_editor import candidate
 
 
-def composed():
+def composed(*, compare=False):
     reader = {**candidate(), 'assessment': []}
-    return compact.map_refs({**valid_report(),'reader':reader},{'M0001':'S001','M1':'S001'})
+    draft = compact.map_refs({**valid_report(),'reader':reader},{'M0001':'S001','M1':'S001'})
+    if compare:
+        draft['reading_choice'] = {
+            'options':[{'id':'A','explanation':'付款进度尚未确认。','limits':'只有本人说法。','source_ids':['S001']}],
+            'selected_id':'A','notes':'现有材料只覆盖付款说法。',
+        }
+    return draft
 
 
 def issue():
@@ -117,7 +123,7 @@ class CompactTests(unittest.TestCase):
         self.assertEqual(compact.audit_retry_reason(path, None, '另一份审稿'), '另一份审稿')
 
     def test_numbered_review_keeps_good_edits_when_another_field_is_invalid(self):
-        draft = composed()
+        draft = composed(compare=True)
         fields = compact.numbered_fields(draft)
         code = next(code for code, path in fields.items() if path == '/reader/verdict')
         good = {'field_id':code,'excerpt':'仍需核对。','replacement':'甲称已付款，需补凭证。',
@@ -133,7 +139,7 @@ class CompactTests(unittest.TestCase):
         self.assertIn('字段编号未知或重复',result['quality']['limitations'][0])
 
     def test_unresolved_numbered_review_leaves_readable_draft(self):
-        draft = composed()
+        draft = composed(compare=True)
         invalid = {'field_id':'invented','excerpt':'未知','replacement':'改写','reason':'无法定位','evidence':[]}
         with patch.object(provider,'generate',side_effect=[(draft,{}),({'issues':[invalid]}, {})]) as calls:
             result = compact.execute(self.case,self.folder)
@@ -144,7 +150,7 @@ class CompactTests(unittest.TestCase):
         self.assertFalse((self.folder/'accepted.json').exists())
 
     def test_final_review_reports_remaining_issue_without_a_second_edit(self):
-        draft = composed()
+        draft = composed(compare=True)
         code = next(k for k,v in compact.numbered_fields(draft).items() if v=='/reader/verdict')
         edit = {'field_id':code,'excerpt':'仍需核对。','replacement':'甲称付过钱。',
                 'evidence':[{'source_id':'S001','quote':'我付了钱'}],'reason':'交代是谁的说法'}
@@ -159,6 +165,17 @@ class CompactTests(unittest.TestCase):
         self.assertEqual(result['quality']['status'],'limited')
         self.assertEqual(result['quality']['revisions'],1)
         self.assertIn('还需要付款凭证。',result['quality']['limitations'])
+
+    def test_comparison_reaches_the_auditor_and_stays_out_of_the_report(self):
+        draft = composed(compare=True)
+        with patch.object(provider,'generate',side_effect=[(draft,{}),({'issues':[]},{})]) as calls:
+            result = compact.execute(self.case,self.folder)
+        self.assertNotIn('reading_choice',result['report'])
+        self.assertIn('现有材料只覆盖付款说法。',calls.call_args.args[0])
+        self.assertNotIn('/reading_choice',json.dumps(compact.numbered_fields(draft)))
+        draft['reading_choice']['options'][0]['source_ids'] = ['S404']
+        with self.assertRaisesRegex(ValueError,'可回查'):
+            compact.mechanical(draft,self.case,{'M0001':'S001'},compare=True)
     def test_exact_paragraph_quote_narrows_patch_to_text_and_keeps_evidence(self):
         pack,_,_=compact.prepare(self.case)
         draft=composed()

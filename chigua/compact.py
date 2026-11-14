@@ -9,10 +9,12 @@ from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, ASSESSMENT_READER_SCHEMA, s
 from .checkpoints import CallFailure,digest
 from .editor import normalize_presentations
 
-VERSION='compact-v7'
+VERSION='compact-v8'
+SINGLE_REVISION_PREVIOUS_VERSION='compact-v7'
 NUMBERED_PREVIOUS_VERSION='compact-v6'
 PREVIOUS_VERSION='compact-v5'
-SUPPORTED_VERSIONS={VERSION,NUMBERED_PREVIOUS_VERSION,PREVIOUS_VERSION}
+SINGLE_REVISION_VERSIONS={VERSION,SINGLE_REVISION_PREVIOUS_VERSION}
+SUPPORTED_VERSIONS=SINGLE_REVISION_VERSIONS | {NUMBERED_PREVIOUS_VERSION,PREVIOUS_VERSION}
 RULES=(ROOT/'skills/chigua-analysis/references/compact-workflow.md').read_text()
 CONTEXT_RULE = (
     '先辨认冲突前是否已有积怨：分工、承诺、交付、决策依据和信任变化。'
@@ -21,6 +23,25 @@ CONTEXT_RULE = (
     '组织贡献与实际交付分别看，具体失误可以评价，单个细节不推出整体能力或人格。'
 )
 REPORT_OUTPUT = schema_obj({**PUBLISHED_SCHEMA['properties'], 'reader': ASSESSMENT_READER_SCHEMA})
+READING_RULES = (
+    '先完成 reading_choice，再写报告。比较两至三种材料支持的读法，各自能解释谁的反应和哪个转折，有什么反证或缺口。'
+    '可以比较导火索、先前摩擦、角色责任，也可以发现是几件独立的事。'
+    '材料很薄或只有一条清楚的线时，可只写一种并说明局限。'
+    '选最能解释关键反应、最贴合证据且最少依赖猜测的读法。'
+    '有分量的另一种解释要在正文自然交代它成立到哪里。'
+    '有趣的细节帮助理解人物观感；关键判断靠行动、交付和前后说法。'
+    '有依据时直接写谁的什么做法合理、失责或越界，为什么，责任有何差别。'
+    '证据明显不对称时不必用各执一词收尾；对事实、事件解释和动机推测分别把握分量。'
+    '每种读法两句以内，证据用材料短编号，写明选择的编号和理由。'
+)
+READING_CHOICE_SCHEMA = schema_obj({
+    'options': {'type': 'array', 'items': schema_obj({
+        'id': STR, 'explanation': STR, 'limits': STR, 'source_ids': STRS,
+    })},
+    'selected_id': STR,
+    'notes': STR,
+})
+COMPARATIVE_OUTPUT = schema_obj({'reading_choice': READING_CHOICE_SCHEMA, **REPORT_OUTPUT['properties']})
 POLICY={'writer_tokens':6000,'audit_tokens':4000,'patch_tokens':4000,'image_tokens':6000,
         'audit_thinking':'disabled','max_revisions':2,'image_batch':4}
 VISION_SCHEMA=schema_obj({'observations':{'type':'array','items':schema_obj({
@@ -220,7 +241,8 @@ def audit_retry_reason(path, audit, current_error):
 
 
 def numbered_fields(candidate):
-    paths = sorted(path for path, value in quoted_fields(candidate, '', '')
+    public_fields = {key:value for key,value in candidate.items() if key != 'reading_choice'}
+    paths = sorted(path for path, value in quoted_fields(public_fields, '', '')
                    if value.strip() and not path.endswith('/quote_text'))
     return {f'F{index:03d}': path for index, path in enumerate(paths, 1)}
 
@@ -276,7 +298,7 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
     selected = fields
     retry_notes = []
     pending = []
-    single_revision = version == VERSION
+    single_revision = version in SINGLE_REVISION_VERSIONS
     max_revisions = 1 if single_revision else POLICY['max_revisions']
     applied_rounds = 0
     initial_limitations = []
@@ -312,6 +334,10 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
                 '\n材料：'+dump(pack)+'\n字段：'+dump(content))
         if single_revision:
             task += '\n'+CONTEXT_RULE+'如果正文漏掉决定性前因，可在最相关的导语、转折或判断字段提出有原文依据的局部补充。'
+        if version == VERSION and revision == 0:
+            task += ('\n成稿比较过这些读法，仍须回到原材料核对：'+dump(candidate['reading_choice'])+
+                     '\n检查主线能否解释关键反应和转折；证据不对称时应说明分量。'
+                     '仅在遗漏或误读会改变读者理解时，提出带依据的局部修改。')
         if retry_notes:
             task += '\n上轮核对未完成。重新检查这些字段，问题只写最必要的几条；校验反馈：'+dump(retry_notes)
         if pending:
@@ -354,7 +380,7 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
             container = locate(edited, parent) if parent else edited
             container[int(key) if isinstance(container,list) else key] = value
             try:
-                next_candidate, next_report, _ = mechanical(edited,case,ids)
+                next_candidate, next_report, _ = mechanical(edited,case,ids,compare=version==VERSION)
             except (ValueError, TypeError, KeyError) as exc:
                 rejected.append(str(exc))
                 pending.append(item)
@@ -413,9 +439,19 @@ def apply_patch(candidate,patch,issues):
     return result
 
 
-def mechanical(candidate,case,ids):
-    validate_schema(candidate,REPORT_OUTPUT)
+def mechanical(candidate,case,ids,*,compare=False):
+    validate_schema(candidate, COMPARATIVE_OUTPUT if compare else REPORT_OUTPUT)
     original=map_refs(candidate,{v:k for k,v in ids.items()})
+    if compare:
+        choice = original.pop('reading_choice')
+        options = choice['options']
+        option_ids = {item['id'] for item in options}
+        if (not 1 <= len(options) <= 3 or len(option_ids) != len(options)
+                or choice['selected_id'] not in option_ids or not choice['notes'].strip()):
+            raise ValueError('读法比较需有 1 至 3 项、明确选择及其理由。')
+        if any(not item['id'].strip() or not item['explanation'].strip() or not item['limits'].strip()
+               or not item['source_ids'] or not set(item['source_ids']) <= ids.keys() for item in options):
+            raise ValueError('每种读法需有解释、局限及可回查的材料。')
     original['reader'],fixes=normalize_presentations(original['reader'],case['messages'])
     validate_report(original,case['messages'])
     # Byte/paragraph page preferences do not trigger paid prose rewriting.
@@ -428,7 +464,10 @@ def mechanical(candidate,case,ids):
     ):
         raise ValueError('当前进展和正文段落需要对应原文。')
     if len(dump(reader))>30000:raise ValueError('阅读稿异常膨胀，停止追加请求。')
-    return map_refs(original,ids),original,fixes
+    normalized = map_refs(original,ids)
+    if compare:
+        normalized['reading_choice'] = map_refs(choice,ids)
+    return normalized,original,fixes
 
 
 def audit_task(pack,candidate,previous):
@@ -510,11 +549,14 @@ def execute(case,folder,progress=lambda stage:None,*,version=VERSION):
     pack['image_observations']=observations
     write_json(folder/'evidence-pack.json',pack)
     context=RULES+'\n材料（短编号与原记录一一对应，时间字段为消息时间）：'+dump(pack)
+    if version == VERSION:
+        context = READING_RULES + '\n' + CONTEXT_RULE + '\n' + context
     candidate,original,fixes=checked_call(
         'compose',
         context+'\n生成全新的事件分析和完整阅读稿。除reader外的字段是简短后台参考，reader是读者正文。不要复用旧报告。最多6个核心判断；篇幅按材料缩小，可选引文、图片字段无内容时填空字符串。现状集中写最新状态和关键悬念，先前的误读与更正放在经过里。',
-        REPORT_OUTPUT,lambda value:mechanical(value,case,ids),tokens=POLICY['writer_tokens'])
-    if version in {VERSION,NUMBERED_PREVIOUS_VERSION}:
+        COMPARATIVE_OUTPUT if version == VERSION else REPORT_OUTPUT,
+        lambda value:mechanical(value,case,ids,compare=version==VERSION),tokens=POLICY['writer_tokens'])
+    if version != PREVIOUS_VERSION:
         return review_numbered(case, folder, pack, ids, candidate, original, trace, call, version)
     previous=[];seen=set();audit_repairs=0
     for revision in range(POLICY['max_revisions']+1):
