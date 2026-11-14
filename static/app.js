@@ -37,7 +37,7 @@ function render(){
 }
 function showEvidence(id){const m=current?.messages.find(m=>m.id===id);if(!m)return;$('#evidence').innerHTML=`<article class="evidence-card"><span class="badge">${esc(refLabel(m.id))}</span><h3>${esc(m.speaker)}</h3><p class="muted">${esc(m.timestamp||'原始时间未知')}<br>${esc(m.source_kind)} / ${esc(m.unit)}</p>${m.parent_id?`<p class="muted">所属材料 ${refButtons([m.parent_id])}</p>`:''}<pre>${esc(m.text)}</pre>${m.image?`<a href="/media/${encodeURIComponent(m.image)}" target="_blank" rel="noopener"><img src="/media/${encodeURIComponent(m.image)}" alt="${esc(m.source_name)} 材料图片"></a>`:''}${m.uncertainty?`<p class="source-note">${esc(readableNote(m.uncertainty))}</p>`:''}<p class="muted">${esc(m.source_name)}<br>来源根：${esc(m.source_root||'未确认；不能据此假定为独立来源')}</p></article>`;if(innerWidth<=900)$('#evidence').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'start'});}
 async function loadList(){const list=await api('/api/cases');$('#case-list').innerHTML=list.map(c=>`<button class="case-item ${current?.id===c.id?'selected':''}" data-case="${c.id}">${esc(c.title)}<small>${c.count} 个材料单元</small></button>`).join('');return list;}
-async function loadCase(id){const obj=await api('/api/cases/'+id);current=obj.case;$('#clear-evidence').click();runs=obj.runs;activeRun=runs[0]||null;history.replaceState(null,'','/?case='+encodeURIComponent(id));$('#case-title').textContent=current.title;$('#case-breadcrumb').textContent='我的案例 / '+current.title;$('#case-meta').textContent=`${current.messages.length} 个材料单元 · ${new Set(current.messages.map(m=>m.speaker)).size} 个发言标签 · ${current.messages.filter(m=>m.image).length} 张图片`;const gaps=current.messages.reduce((n,m)=>n+(m.parent_id?0:(m.source_reference?.media||[]).filter(x=>x.status==='unavailable').length),0);$('#media-warning').classList.toggle('hidden',!gaps);$('#media-warning').textContent=gaps?`本包有 ${gaps} 张图片未取得，文件名不能代替图片内容。请先在微信打开原图，再用一条文字和一张图片试导出；确认 ZIP 内含图片文件后再导入。文字报告仍可生成，但会保留缺图说明。`:'';$('#identity').value=current.identity;$('#analyze').disabled=!!activeJob;await loadList();render();}
+async function loadCase(id){const obj=await api('/api/cases/'+id);current=obj.case;$('#clear-evidence').click();runs=obj.runs;activeRun=runs[0]||null;history.replaceState(null,'','/?case='+encodeURIComponent(id));$('#case-title').textContent=current.title;$('#case-breadcrumb').textContent='我的案例 / '+current.title;$('#case-meta').textContent=`${current.messages.length} 个材料单元 · ${new Set(current.messages.map(m=>m.speaker)).size} 个发言标签 · ${current.messages.filter(m=>m.image).length} 张图片`;const gaps=current.messages.reduce((n,m)=>n+(m.parent_id?0:(m.source_reference?.media||[]).filter(x=>x.status==='unavailable').length),0);$('#media-warning').classList.toggle('hidden',!gaps);$('#supplement-images').classList.toggle('hidden',!gaps);$('#media-warning').textContent=gaps?`本包有 ${gaps} 张图片未取得，文件名不能代替图片内容。可在微信中单独保存图片，再点“补齐图片”逐条核对绑定。文字报告仍可生成，但会保留缺图说明。`:'';$('#identity').value=current.identity;$('#analyze').disabled=!!activeJob;await loadList();render();}
 function showModel(){const m=config.model;$('#model-status').textContent=(m.provider==='manual'?'仅查看':m.provider==='deepseek'?'DeepSeek':m.provider==='api'?'API':'Codex')+' / '+m.model;}
 async function refreshConfig(){config=await api('/api/config');showModel();}
 document.addEventListener('click',async e=>{const ref=e.target.closest('[data-ref]');if(ref)showEvidence(ref.dataset.ref);const c=e.target.closest('[data-case]');if(c){try{await loadCase(c.dataset.case);feedback('');}catch(err){feedback(err.message,true);}}const r=e.target.closest('[data-run]');if(r){activeRun=runs.find(x=>x.id===r.dataset.run);tab='report';render();}const f=e.target.closest('[data-filter]');if(f){filter=f.dataset.filter;render();}});
@@ -89,4 +89,40 @@ $('#zip-form').onsubmit=async e=>{
     feedback(`已导入 ${result.materials} 条材料、${result.images.available||0} 张图片，分为 ${result.cases.length} 包。缺图 ${result.images.unavailable||0} 张，范围外排除 ${result.excluded} 条，重复候选 ${result.duplicates} 条保留。请先检查原文，再生成报告。`);
   }catch(err){$('#zip-error').textContent=err.message;$('#zip-progress').textContent='导入未完成，所选文件仍保留，可修改范围后重试。';}
   finally{zipBusy=false;$('#zip-form').setAttribute('aria-busy','false');$('#zip-form').querySelectorAll('input,button').forEach(el=>el.disabled=false);}
+};
+
+let supplementRows=[], supplementBusy=false, supplementCase=null;
+function updateSupplementCount(){const selected=supplementRows.filter(x=>x.asset);const checked=selected.filter(x=>x.confirmed);$('#save-supplements').disabled=supplementBusy||!checked.length;$('#save-supplements').textContent=`保存已核对的对应${checked.length?'（'+checked.length+' 张）':''}`;}
+function supplementLock(busy){supplementBusy=busy;$('#supplement-form').setAttribute('aria-busy',String(busy));$('#supplement-form').querySelectorAll('input,select,button').forEach(el=>el.disabled=busy);for(const [i,row] of supplementRows.entries()){$(`[data-supplement-confirm="${i}"]`).disabled=busy||!row.asset;}updateSupplementCount();}
+$('#supplement-images').onclick=()=>{
+  supplementCase=current.id;supplementRows=[];$('#supplement-error').textContent='';$('#supplement-progress').textContent='';
+  current.messages.forEach((m,index)=>{if(m.parent_id)return;(m.source_reference?.media||[]).forEach((media,mediaIndex)=>{if(media.status==='unavailable')supplementRows.push({message:m,label:refLabel(m.id),index,mediaIndex,media,asset:null,confirmed:false,kind:'saved_image'});});});
+  $('#supplement-list').innerHTML=supplementRows.map((row,i)=>{const m=row.message;const context=[current.messages[row.index-1],current.messages[row.index+1]].filter(Boolean);return `<article class="supplement-row"><h3>${esc(refLabel(m.id))} · ${esc(m.speaker)}</h3><p class="muted">${esc(m.timestamp||'时间未知')}<br>待补图片：${esc(row.media.reference)}</p><details><summary>查看前后文字</summary>${context.map(x=>`<p><strong>${esc(x.speaker)}</strong>：${esc(x.text.slice(0,240))}${x.text.length>240?'…':''}</p>`).join('')}</details><label>为 ${esc(refLabel(m.id))} 选择图片<input data-supplement-file="${i}" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></label><label>图片来源<select data-supplement-kind="${i}"><option value="saved_image">从微信单独保存的图片</option><option value="screenshot">截图（可能经过裁切）</option></select></label><div data-supplement-preview="${i}"></div><label class="supplement-confirm"><input data-supplement-confirm="${i}" type="checkbox" disabled>我已在微信中核对，这张图对应上面的这条记录</label><button class="plain" type="button" data-supplement-remove="${i}">移除所选图片</button></article>`;}).join('');
+  updateSupplementCount();$('#supplement-dialog').showModal();
+};
+$('#supplement-dialog').addEventListener('cancel',e=>{if(supplementBusy)e.preventDefault();});
+$('#supplement-list').addEventListener('change',async e=>{
+  const index=e.target.dataset.supplementFile??e.target.dataset.supplementKind??e.target.dataset.supplementConfirm;if(index===undefined)return;const row=supplementRows[Number(index)];
+  if(e.target.hasAttribute('data-supplement-confirm')){row.confirmed=e.target.checked;updateSupplementCount();return;}
+  row.confirmed=false;$(`[data-supplement-confirm="${index}"]`).checked=false;
+  if(e.target.hasAttribute('data-supplement-kind')){row.kind=e.target.value;updateSupplementCount();return;}
+  row.asset=null;$(`[data-supplement-preview="${index}"]`).innerHTML='';const file=e.target.files[0];if(!file){updateSupplementCount();return;}
+  supplementLock(true);$('#supplement-error').textContent='';$('#supplement-progress').textContent='正在保存图片到本机…';
+  try{
+    if(!/\.(png|jpe?g)$/i.test(file.name)||file.size>8*1024*1024)throw Error('请选择不超过 8 MB 的 PNG 或 JPG 图片。');
+    const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(file);});
+    row.asset=await api('/api/supplements/upload',{data});
+    $(`[data-supplement-preview="${index}"]`).innerHTML=`<img src="/media/${encodeURIComponent(row.asset.image)}" alt="为 ${esc(row.label)} 选择的待核对图片"><p class="muted">${esc(file.name)} · 请对照微信原记录后勾选确认。</p>`;
+    $('#supplement-progress').textContent='图片已在本机保存，尚未绑定或发送给模型。';
+  }catch(err){$('#supplement-error').textContent=err.message;$('#supplement-progress').textContent='';}
+  finally{supplementLock(false);}
+});
+$('#supplement-list').addEventListener('click',e=>{const button=e.target.closest('[data-supplement-remove]');if(!button||supplementBusy)return;const index=button.dataset.supplementRemove;const row=supplementRows[Number(index)];row.asset=null;row.confirmed=false;$(`[data-supplement-file="${index}"]`).value='';$(`[data-supplement-preview="${index}"]`).innerHTML='';$(`[data-supplement-confirm="${index}"]`).checked=false;$(`[data-supplement-confirm="${index}"]`).disabled=true;updateSupplementCount();});
+$('#supplement-form').onsubmit=async e=>{
+ e.preventDefault();if(supplementBusy)return;$('#supplement-error').textContent='';const selected=supplementRows.filter(x=>x.asset);
+ if(!selected.length||selected.some(x=>!x.confirmed)){$('#supplement-error').textContent='请核对每张所选图片；不能确认的图片请先移除。';return;}
+ supplementLock(true);$('#supplement-progress').textContent='正在保存补图版案例…';
+ try{const result=await api('/api/supplements/apply',{case_id:supplementCase,bindings:selected.map(x=>({message_id:x.message.id,media_index:x.mediaIndex,asset_id:x.asset.id,kind:x.kind,confirmed:true}))});$('#supplement-dialog').close();tab='materials';await loadCase(result.id);feedback('补图版已保存。请检查图片对应，再点击“生成分析报告”；旧报告保留在原案例中。');}
+ catch(err){$('#supplement-error').textContent=err.message;$('#supplement-progress').textContent='保存未完成，可核对后重试。';}
+ finally{supplementLock(false);}
 };

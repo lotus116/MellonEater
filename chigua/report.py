@@ -124,6 +124,16 @@ def media_note(message):
     return '；'.join(dict.fromkeys(reasons.get(m.get('reason'),'图片未取得') for m in missing))
 
 
+def supplement_note(message):
+    reference=message.get('source_reference') or {}
+    records=[reference.get('supplement')]+[m.get('supplement') for m in reference.get('media',[])
+        if m.get('image')==message.get('image')]
+    kinds={r.get('kind') for r in records if isinstance(r,dict)}
+    if not kinds:return ''
+    label='截图' if 'screenshot' in kinds else '单独保存的图片'
+    return '后补'+label+'：对应关系由用户核对确认，并非原 ZIP 随附；原始分辨率及完整性未核验。'
+
+
 def reader_html(case,run):
     r=run['report']['reader'];lookup={m['id']:m for m in case['messages']}
     labels=source_labels(case);sources=cited_sources(case,r)
@@ -144,7 +154,7 @@ def reader_html(case,run):
         for para in ch['paragraphs']:parts.extend([p(para['text']),refs(para['source_ids'])])
         if ch['quote_text']:parts.append('<blockquote>'+escape(ch['quote_text'])+p('—— '+ch['quote_speaker'])+refs([ch['quote_source_id']])+'</blockquote>')
         if ch['image_id']:
-            parts.append('<figure><img src="'+image_uri(lookup[ch['image_id']]['image'])+'" alt="'+escape(ch['image_caption'])+'"><figcaption>'+escape(ch['image_caption'])+' '+refs([ch['image_id']])+'</figcaption></figure>')
+            parts.append('<figure><img src="'+image_uri(lookup[ch['image_id']]['image'])+'" alt="'+escape(ch['image_caption'])+'"><figcaption>'+escape(ch['image_caption'])+' '+refs([ch['image_id']])+p(supplement_note(lookup[ch['image_id']]))+'</figcaption></figure>')
     if r.get('story',{}).get('threads'):
         parts.append('<h2>把支线放回主线</h2>')
         for thread in r['story']['threads']:parts.extend([p(thread['name']+'：'+thread['role_in_story']),refs(thread['source_ids'])])
@@ -157,7 +167,8 @@ def reader_html(case,run):
             '<small>'+escape(local_time(m.get('timestamp') or '原始时间未知'))+'</small>',
             '<pre style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit">'+escape(m['text'])+'</pre>'])
         if m.get('parent_id'):parts.append('所属材料 '+refs([m['parent_id']]))
-        if m.get('image'):parts.append('<img src="'+image_uri(m['image'])+'" alt="材料 '+labels[m['id']]+' 原图">')
+        if m.get('image'):parts.append('<img src="'+image_uri(m['image'])+'" alt="材料 '+labels[m['id']]+' 图片">')
+        if supplement_note(m):parts.append(p(supplement_note(m)))
         if media_note(m):parts.append(p('图片缺口：'+media_note(m)+'；未据此补写图片内容。'))
         parts.append('</section>')
     parts.append('</main></html>')
@@ -304,6 +315,7 @@ def reader_pdf(case,run,path,*,include_sources=True):
             img=Image(str(image_path));factor=min(315/img.imageWidth,400/img.imageHeight,1)
             img.drawWidth=img.imageWidth*factor;img.drawHeight=img.imageHeight*factor;img.hAlign='CENTER'
             story.append(KeepTogether([Spacer(1,8),img,Spacer(1,7),references([image_id],chapter['image_caption']+' / ')]))
+            if supplement_note(m):story.append(p(supplement_note(m),small))
         if refs:story.append(references(refs,'本段材料：'))
     if r.get('story',{}).get('threads'):
         story.append(p('把支线放回主线',heading))
@@ -338,6 +350,7 @@ def reader_pdf(case,run,path,*,include_sources=True):
                 factor=min(450/img.imageWidth,480/img.imageHeight,1)
                 img.drawWidth=img.imageWidth*factor;img.drawHeight=img.imageHeight*factor
                 story.append(img)
+            if supplement_note(m):story.append(p(supplement_note(m),small))
             if media_note(m):story.append(p('图片缺口：'+media_note(m)+'；未据此补写图片内容。',small))
     def footer(canvas,doc):
         metrics['pages']=max(metrics['pages'],doc.page)

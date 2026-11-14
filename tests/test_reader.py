@@ -91,6 +91,23 @@ class ReaderTests(unittest.TestCase):
             result=layout_probe({'messages':self.messages},{},reader(),Path('unused.pdf'))
         self.assertEqual(result['pages'],3)
         self.assertIs(render.call_args.kwargs['include_sources'],False)
+    def test_supplemented_screenshot_is_embedded_and_identified(self):
+        from PIL import Image
+        from pypdf import PdfReader
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);(root/'uploads').mkdir()
+            Image.new('RGB',(100,60),'blue').save(root/'uploads'/'image.png')
+            messages=copy.deepcopy(self.messages);messages[0]['image']='image.png'
+            messages[0]['source_reference']={'supplement':{'kind':'screenshot','method':'user_confirmed'}}
+            r=reader();r['chapters'][0]['image_id']='M1';r['chapters'][0]['image_caption']='合成测试图'
+            case={'messages':messages};run={'report':{'reader':r},'created_at':'2026-11-14T00:00:00Z'}
+            with patch.object(report,'DATA',root):
+                html=report.reader_html(case,run)
+                report.report_pdf(case,run,root/'report.pdf')
+            self.assertIn('后补截图',html);self.assertIn('data:image/png;base64,',html)
+            pdf=PdfReader(root/'report.pdf');text=''.join(page.extract_text() for page in pdf.pages)
+            self.assertIn('后补截图',text);self.assertIn('并非原 ZIP 随附',text)
+            self.assertTrue(any(page.get('/Resources',{}).get('/XObject') for page in pdf.pages))
     def test_siblings_inherit_container_source(self):
         rows=normalize_messages([{'id':'A','source_name':'container','children':[
             {'id':'B','text':'b','source_name':'override'}, {'id':'C','text':'c'}]}])

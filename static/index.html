@@ -5,7 +5,7 @@
 <button class="primary wide" id="new-case">＋ 导入聊天记录</button><button class="secondary wide zip-entry" id="new-zip">导入微信 ZIP</button><div class="side-label">我的案例</div><nav id="case-list" aria-label="案例列表"></nav>
 <div class="side-bottom"><div class="local-dot">材料保存在本机</div><button class="plain wide" id="open-settings">模型与接入设置</button><span class="version">Mac demo / 0.1</span></div></aside>
 <main id="main" tabindex="-1"><header class="topbar"><span id="case-breadcrumb">事件与证据工作台</span><span class="model-pill" id="model-status">正在连接</span></header>
-<section class="case-header"><div><p class="eyebrow">读懂经过，也看清依据</p><h1 id="case-title">打开一个案例</h1><p id="case-meta" class="muted">从左侧导入聊天记录，或查看已有案例。</p></div><div class="header-actions"><button id="analyze" class="primary">生成分析报告</button><button id="export-pdf" class="secondary" disabled>导出 PDF</button></div></section>
+<section class="case-header"><div><p class="eyebrow">读懂经过，也看清依据</p><h1 id="case-title">打开一个案例</h1><p id="case-meta" class="muted">从左侧导入聊天记录，或查看已有案例。</p></div><div class="header-actions"><button id="analyze" class="primary">生成分析报告</button><button id="supplement-images" class="secondary hidden">补齐图片</button><button id="export-pdf" class="secondary" disabled>导出 PDF</button></div></section>
 <p id="media-warning" class="notice hidden" role="status"></p>
 <div id="feedback" role="status" aria-live="polite" class="feedback hidden"></div>
 <details class="analysis-options"><summary>分析方式与提问身份</summary><div class="option-row"><label>分析方式<select id="method"><option value="B2">证据工作流（四阶段）</option><option value="B1">详细提示（单次）</option><option value="B0">普通提示（单次）</option><option value="A1">自由笔记（四阶段对照）</option></select></label><label>提交者身份<input id="identity" value="旁观者" maxlength="200"></label><p class="muted">仅发送当前案例给所选模型。不同运行会分别保存。</p></div></details>
@@ -31,6 +31,14 @@
 <p class="notice">这一步只保存到本机，不会自动发送给模型。</p>
 <p id="zip-progress" role="status" aria-live="polite"></p><p id="zip-error" class="error" role="alert"></p>
 <div class="dialog-footer"><button type="button" class="secondary close">取消</button><button type="submit" class="primary" id="save-zip">导入并查看材料</button></div>
+</form></dialog>
+<dialog id="supplement-dialog" aria-labelledby="supplement-heading"><form id="supplement-form">
+<div class="dialog-head"><div><h2 id="supplement-heading">给已有文字补上图片</h2><p class="muted">在微信打包聊天中打开大图，另存到本机；无法另存时可用截图，并选择对应类型。先补一两张验证即可。</p></div><button type="button" class="icon-button close" aria-label="关闭补图窗口">×</button></div>
+<p class="notice">逐条核对发言人、前后文字和图片内容。文件名、时间或排列顺序只能作为线索，不能证明对应关系。支持 PNG、JPG，每张不超过 8 MB。</p>
+<div id="supplement-list"></div>
+<p id="supplement-progress" role="status" aria-live="polite"></p><p id="supplement-error" class="error" role="alert"></p>
+<p class="muted">保存为新的“补图版”案例，保留原材料和旧报告。此步骤只保存到本机；生成新版报告时才会将材料交给当前模型。</p>
+<div class="dialog-footer"><button type="button" class="secondary close">取消</button><button type="submit" class="primary" id="save-supplements" disabled>保存已核对的对应</button></div>
 </form></dialog>
 <dialog id="settings-dialog"><form id="settings-form"><div class="dialog-head"><h2>模型与接入</h2><button type="button" class="icon-button close" aria-label="关闭设置">×</button></div>
 <label>分析入口<select id="provider"><option value="codex">本机 Codex</option><option value="deepseek">DeepSeek API</option><option value="api">其他兼容 API</option><option value="manual">仅查看 / 导入分析结果</option></select></label>

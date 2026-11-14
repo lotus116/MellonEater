@@ -172,6 +172,14 @@ class Handler(BaseHTTPRequestHandler):
             if length<=0 or length>MAX_BODY:
                 raise ValueError('请求为空或超过 30 MB。')
             obj=json.loads(self.rfile.read(length))
+            if path=='/api/supplements/upload':
+                from .supplements import store_asset
+                raw=base64.b64decode(obj.get('data',''),validate=True)
+                return self.send(store_asset(raw,DATA),201)
+            if path=='/api/supplements/apply':
+                from .supplements import clone_with_images
+                case=pipeline.load_case(safe_id(obj.get('case_id')))
+                return self.send(clone_with_images(case,obj.get('bindings'),DATA),201)
             if path=='/api/wechat-zip/import':
                 from .wechat_zip import import_archives,MAX_ARCHIVE
                 ids=obj.get('uploads')

@@ -107,5 +107,26 @@ class ServerTests(unittest.TestCase):
         code,result=self.request('/api/wechat-zip/defaults')
         self.assertEqual(result,{'group':'合成群','start':'2026-11-01','end':'2026-11-02'})
 
+    def test_supplement_roundtrip_keeps_old_case_and_never_analyzes(self):
+        import base64
+        from PIL import Image
+        code,old=self.request('/api/cases',{'title':'合成缺图','messages':[{'id':'A','text':'[图片] missing.png',
+            'source_reference':{'media':[{'reference':'missing.png','status':'unavailable','reason':'missingImage'}]}}]})
+        self.assertEqual(code,201)
+        picture=io.BytesIO();Image.new('RGB',(20,12),'blue').save(picture,'PNG')
+        payload={'data':base64.b64encode(picture.getvalue()).decode()}
+        self.assertEqual(self.request('/api/supplements/upload',payload,token=False)[0],403)
+        self.assertEqual(self.request('/api/supplements/upload',{'data':base64.b64encode(b'not a picture').decode()})[0],400)
+        with patch('chigua.provider.generate') as generate:
+            code,asset=self.request('/api/supplements/upload',payload);self.assertEqual(code,201)
+            binding={'message_id':'A','media_index':0,'asset_id':asset['id'],'kind':'screenshot','confirmed':True}
+            code,new=self.request('/api/supplements/apply',{'case_id':old['id'],'bindings':[binding]})
+            generate.assert_not_called()
+        self.assertEqual(code,201);self.assertNotEqual(old['id'],new['id'])
+        self.assertEqual(self.request('/api/cases/'+old['id'])[1]['case'],old)
+        self.assertTrue(new['messages'][0]['image']);self.assertEqual(new['messages'][0]['text'],old['messages'][0]['text'])
+        self.assertEqual(self.request('/api/cases/'+new['id'])[1]['runs'],[])
+        self.assertEqual(self.request('/api/supplements/apply',{'case_id':new['id'],'bindings':[binding]})[0],400)
+
 
 if __name__=='__main__':unittest.main()
