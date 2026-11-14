@@ -81,6 +81,61 @@ class EvidenceFirstTests(unittest.TestCase):
         self.assertFalse(safe['bound'])
         self.assertNotIn('整理动作',safe['action'])
 
+        # Quoting the full screenshot turn (including the sender) must
+        # resolve to the same actor and clock as quoting the words alone.
+        row['source']['quote'] = '陈同学\n先道歉再谈。'
+        whole_turn = evidence_first.build(ledger([row]),pack)['events'][0]
+        self.assertEqual((whole_turn['actor'],whole_turn['time']),('协调人','昨天 21:25（图内）'))
+        private = {**row,'scene':'私聊'}
+        self.assertFalse(evidence_first.build(ledger([private]),pack)['events'][0]['bound'])
+
+    def test_composer_can_link_to_checked_dispute_by_topic_without_rewriting(self):
+        case = {'id':'sample','messages':core.normalize_messages([
+            {'id':'A','speaker':'协调人','text':'等了两天。'},
+            {'id':'B','speaker':'负责人','text':'我等了四天。'},
+        ])}
+        source = ledger([event('原始言行','S001','等了两天。')],
+                        [{'topic':'到账到转出的间隔','limit':'无凭证。',
+                          'accounts':[dispute('S001','等了两天。'),dispute('S002','等了四天。')]}])
+        draft = prose('S001')
+        draft['chapters'][0]['paragraphs'].append({'text':'无法核对的归责应略去。','source_ids':['S404']})
+        draft['verdict_source_ids'] = ['S404']
+        draft['assessment'] = [
+            {'title':'检查间隔','observation':'协调人说两天。','judgment':'应拿出凭证。',
+             'source_ids':['S001'],'conflict_ids':['到账到转出的间隔'],'inference':'','counterpoint':'另有人说四天。'},
+            {'title':'无依据的断言','observation':'另一个人同时在场。','judgment':'他应负责。',
+             'source_ids':['S404'],'conflict_ids':[],'inference':'','counterpoint':''},
+        ]
+        before = copy.deepcopy(draft)
+        with tempfile.TemporaryDirectory() as work, patch.object(provider,'generate',side_effect=[
+            (source,{}),(draft,{}),
+        ]) as model:
+            result = compact.execute(case,Path(work))
+        self.assertEqual([call.args[3] for call in model.call_args_list],['bind_sources','compose'])
+        self.assertEqual(draft,before)
+        reader = result['report']['reader']
+        self.assertEqual(len(reader['chapters'][0]['paragraphs']),1)
+        self.assertEqual(reader['verdict_source_ids'],[])
+        self.assertEqual(len(reader['assessment']),1)
+        self.assertEqual(reader['assessment'][0]['conflict_ids'],['A','B'])
+        self.assertEqual(result['quality']['status'],'limited')
+
+    def test_missing_all_prose_citations_uses_ledger_and_does_not_guess_at_links(self):
+        draft = prose('S404')
+        draft['assessment'] = [
+            {'title':'可核对的判断','observation':'原文有这句话。','judgment':'应当交代进度。',
+             'source_ids':['S001'],'conflict_ids':['同名争议','S404'],'inference':'','counterpoint':''},
+        ]
+        data = {'events':[{'source_ids':['S001'],'bound':True,'action':'群里有人问了付款进度。'}],
+                'disputes':[{'topic':'同名争议','accounts':[{'source_ids':['S001','S002']}]},
+                            {'topic':'同名争议','accounts':[{'source_ids':['S003','S004']}]}]}
+        findings = evidence_first.reconcile_prose(draft,data)
+        self.assertTrue(findings)
+        self.assertEqual(draft['chapters'][0]['paragraphs'],[
+            {'text':'群里有人问了付款进度。','source_ids':['S001']},
+        ])
+        self.assertEqual(draft['assessment'][0]['conflict_ids'],[])
+
     def test_repeated_scenes_and_question_are_not_promoted_to_retaliation(self):
         pack = {'messages':[
             {'id':'S001','speaker':'P1','speaker_label':'协调人','text':'【社员群，补贴私信】负责人：为什么要我认错？',

@@ -82,7 +82,7 @@ def replace_speaker_codes(value, roles):
     return value
 
 
-def build(ledger, pack):
+def build(ledger, pack, *, legacy_context=False):
     validate_schema(ledger, LEDGER_SCHEMA)
     rows = {m['id']:m for m in pack['messages']}
     images = {m['source_id']:m for m in pack.get('image_observations', [])}
@@ -107,6 +107,13 @@ def build(ledger, pack):
             return ''
         nearby = bool(re.search(r'(?:^|[\n【\s])'+re.escape(literal)+r'\s*[:：]?\s*$',before))
         named_in_turn = bool(re.search(r'(?:^|[。！？\n】\s])'+re.escape(literal)+r'\s*[:：]',quote))
+        # Longer OCR excerpts may start with the sender on a line of its own.
+        # Accept that layout only when the same participant is the sole
+        # recognizable sender in the excerpt.
+        labels = {row['speaker_label'] for row in rows.values()}
+        standalone = {line.strip() for line in quote.splitlines() if line.strip() in labels}
+        if not legacy_context:
+            named_in_turn |= quote.startswith(literal+'\n') and standalone == {literal}
         if not (nearby or named_in_turn):
             return ''
         if claimed in roles and any(row['speaker']==claimed and row['speaker_label']==literal
@@ -173,8 +180,13 @@ def build(ledger, pack):
             if direct and heading:
                 scene = scene_for(heading[1].split('，')[0].split(',')[0])
         asserted_scene = item['scene']
+        groups = {'群聊','小群','公开群'}
+        shared_scope = scene in groups and asserted_scene in groups and '群聊' in {scene,asserted_scene}
         scene_conflict = (scene != asserted_scene and asserted_scene not in {'未知','其他'}
-                          and (scene=='未知' or '群聊' not in {scene,asserted_scene}))
+                          and not shared_scope)
+        if legacy_context:
+            scene_conflict = (scene != asserted_scene and asserted_scene not in {'未知','其他'}
+                              and (scene=='未知' or '群聊' not in {scene,asserted_scene}))
         if scene_conflict:
             findings.append(f'一条{item["kind"]}的拟定场景与原文未能对应。')
         if direct:
@@ -224,7 +236,7 @@ def build(ledger, pack):
             order_basis = '相对顺序可确认'
         # When attribution fails, carry the excerpt to the reader without
         # importing the model's actor/scene paraphrase.
-        uncertain = (actor=='说话者待确认' or scene_conflict or
+        uncertain = (actor=='说话者待确认' or (scene_conflict and (legacy_context or asserted_scene != '群聊')) or
                      (direct and item['actual_actor'] and item['actual_actor']!=row['speaker']))
         events.append({'kind':item['kind'],'title':role_words(item['label']) if not uncertain else item['kind']+'（归属待确认）',
                        'action':role_words(item['action']) if not uncertain else '此处可核对引文，动作归属仍待确认。',
@@ -302,6 +314,79 @@ def attach(draft, ledger):
                        'standard':'','unknowns':[],'would_change_if':''})
     return {'title':draft['title'],'summary':draft['lead'],'events':index,'claims':claims,
             'limitations':ledger['limits'],'reader':reader}
+
+
+def reconcile_prose(draft, ledger):
+    """Resolve contrast links against the ledger and isolate unsupported prose."""
+    approved = {sid for event in ledger['events'] for sid in event['source_ids']}
+    contrasts = {}
+    for dispute in ledger['disputes']:
+        sources = [sid for account in dispute['accounts'] for sid in account['source_ids']]
+        approved.update(sources)
+        contrasts.setdefault(dispute['topic'], []).append(sources)
+
+    findings = []
+
+    def supported(refs):
+        return bool(refs) and all(ref.strip() in approved for ref in refs)
+
+    def unique_ids(refs):
+        return list(dict.fromkeys(ref.strip() for ref in refs))
+
+    chapters = []
+    for chapter in draft['chapters']:
+        paragraphs = []
+        for para in chapter['paragraphs']:
+            if para['text'].strip() and supported(para['source_ids']):
+                paragraphs.append({**para,'source_ids':unique_ids(para['source_ids'])})
+            else:
+                findings.append(f'「{chapter["title"]}」有一段缺少可核对的出处，已略去该段。')
+        if paragraphs:
+            chapters.append({**chapter,'paragraphs':paragraphs})
+    if not chapters:
+        # Build fresh paragraphs from known ledger rows instead of giving
+        # unverified prose a different citation.
+        chosen = [event for event in ledger['events'] if event['bound']][:4] or ledger['events'][:1]
+        paragraphs = [{'text':event['action'],'source_ids':event['source_ids']} for event in chosen]
+        chapters = [{'title':'可核对的经过','paragraphs':paragraphs}]
+        draft['lead'] = '以下按已核对的材料整理经过。仍有归属或顺序待确认的部分见时间线。'
+        findings.append('正文引用未能核对，网页已改用材料底稿中的经过。')
+    draft['chapters'] = chapters
+
+    if not (draft['verdict'].strip() and supported(draft['verdict_source_ids'])):
+        draft['verdict'] = '现有材料还不能确认完整结果，请对照各方说法与原文。'
+        draft['verdict_source_ids'] = []
+        findings.append('现状结论缺少可核对的出处，已保留为待确认。')
+    else:
+        draft['verdict_source_ids'] = unique_ids(draft['verdict_source_ids'])
+
+    assessments = []
+    for item in draft['assessment']:
+        source_ids = item['source_ids']
+        if not supported(source_ids) or not all(item[key].strip() for key in ('title','observation','judgment')):
+            findings.append('一条行为判断缺少可核对的依据，已略去。')
+            continue
+        contrast_ids = []
+        for value in item['conflict_ids']:
+            ref = value.strip()
+            choices = contrasts.get(ref, [])
+            if ref in approved:
+                contrast_ids.append(ref)
+            elif len(choices) == 1:
+                # A topic links to the checked comparison as a whole.
+                contrast_ids.extend(choices[0])
+            else:
+                findings.append(f'「{item["title"]}」有反证出处未能定位，已略去该项引用。')
+        assessments.append({**item,'source_ids':unique_ids(source_ids),
+                            'conflict_ids':unique_ids(contrast_ids)})
+    draft['assessment'] = assessments
+    if not draft['title'].strip():
+        draft['title'] = '事件经过与争议'
+    if not draft['lead'].strip():
+        draft['lead'] = '从时间线查看已核对的经过和争议。'
+    if not draft['central_question'].strip():
+        draft['central_question'] = '事情是怎样发展的？'
+    return list(dict.fromkeys(findings))
 
 
 def check_prose(draft, ledger):

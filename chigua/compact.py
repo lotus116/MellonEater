@@ -10,7 +10,9 @@ from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, ASSESSMENT_READER_SCHEMA, T
 from .checkpoints import CallFailure,digest
 from .editor import normalize_presentations
 
-VERSION='compact-v14'
+VERSION='compact-v15'
+EVIDENCE_FIRST_PREVIOUS_VERSION='compact-v14'
+EVIDENCE_FIRST_VERSIONS={VERSION,EVIDENCE_FIRST_PREVIOUS_VERSION}
 CROSSCHECK_VERSION='compact-v13'
 ACTION_PREVIOUS_VERSION='compact-v12'
 ANCHORED_PREVIOUS_VERSION='compact-v11'
@@ -24,7 +26,7 @@ ANCHORED_VERSIONS=ACTION_VERSIONS | {ANCHORED_PREVIOUS_VERSION}
 TIMED_VERSIONS=ANCHORED_VERSIONS | {TIMED_PREVIOUS_VERSION}
 COMPARATIVE_VERSIONS=TIMED_VERSIONS | {COMPARATIVE_PREVIOUS_VERSION}
 SINGLE_REVISION_VERSIONS=COMPARATIVE_VERSIONS | {SINGLE_REVISION_PREVIOUS_VERSION}
-SUPPORTED_VERSIONS=SINGLE_REVISION_VERSIONS | {VERSION,NUMBERED_PREVIOUS_VERSION,PREVIOUS_VERSION}
+SUPPORTED_VERSIONS=SINGLE_REVISION_VERSIONS | EVIDENCE_FIRST_VERSIONS | {NUMBERED_PREVIOUS_VERSION,PREVIOUS_VERSION}
 RULES=(ROOT/'skills/chigua-analysis/references/compact-workflow.md').read_text()
 CONTEXT_RULE = (
     '先辨认冲突前是否已有积怨：分工、承诺、交付、决策依据和信任变化。'
@@ -814,36 +816,36 @@ def revision_audit_task(pack, candidate, previous):
             '\n相关材料：'+dump(pack)+'\n先前问题：'+dump(previous)+'\n修改后的字段：'+dump(changes))
 
 
-def execute_evidence_first(case, folder, pack, ids, trace, checked_call):
+def execute_evidence_first(case, folder, pack, ids, trace, checked_call, version):
     from .report import reader_html
 
     def bind(value):
         ledger = evidence_first.build(value, pack)
         if not ledger['events']:
             raise ValueError('没有任何事件能定位到输入原文。')
-        return ledger
+        return value
 
-    ledger = checked_call('bind_sources',evidence_first.RULES+'\n材料：'+dump(pack),
-                          evidence_first.LEDGER_SCHEMA,bind,tokens=3400)
+    binding = checked_call('bind_sources',evidence_first.RULES+'\n材料：'+dump(pack),
+                           evidence_first.LEDGER_SCHEMA,bind,tokens=3400)
+    ledger = evidence_first.build(binding,pack)
     write_json(folder/'bound-evidence.json',ledger)
-    approved = {sid for event in ledger['events'] for sid in event['source_ids']}
-    approved.update(sid for dispute in ledger['disputes'] for account in dispute['accounts']
-                    for sid in account['source_ids'])
     # The writer sees reviewed extracts, not all the wrappers and OCR blocks.
     context = {'question':pack['question'],'scope':pack['scope'],'evidence':ledger}
+    rules = evidence_first.WRITE_RULES
+    if version == EVIDENCE_FIRST_PREVIOUS_VERSION:
+        # Keep the exact paid request reusable; apply improved local binding
+        # when assembling the published report, never to the old cache key.
+        context['evidence'] = evidence_first.build(binding,pack,legacy_context=True)
+    else:
+        rules += ' source_ids 和 conflict_ids 只填底稿里的 S 编号。反证没有原文编号时填空数组。'
 
     def prepare_report(value):
         prose = copy.deepcopy(value)
-        prose_limits = evidence_first.check_prose(prose,ledger)
+        prose_limits = evidence_first.reconcile_prose(prose,ledger)
+        prose_limits.extend(evidence_first.check_prose(prose,ledger))
         draft = evidence_first.attach(prose,ledger)
         draft['timeline'] = derived_timeline(draft['reader']['story']['arc'])
-        if not set(draft['reader']['verdict_source_ids']) <= approved:
-            raise ValueError('现状引用超出了已核对的材料。')
         reader = draft['reader']
-        linked = [p for chapter in reader['chapters'] for p in chapter['paragraphs']]
-        linked += reader['assessment']
-        if any(not set(item['source_ids'] + item.get('conflict_ids',[])) <= approved for item in linked):
-            raise ValueError('正文引用超出了已核对的材料。')
         for item in reader['assessment']:
             if not item['counterpoint'].strip() and (item['inference'].strip() or item['conflict_ids']):
                 item['counterpoint'] = '这项判断的进一步解释仍待核对。'
@@ -853,7 +855,7 @@ def execute_evidence_first(case, folder, pack, ids, trace, checked_call):
         validate_report(normalized,case['messages'])
         return normalized,prose_limits
 
-    report, prose_limits = checked_call('compose',evidence_first.WRITE_RULES+'\n核对底稿：'+dump(context),
+    report, prose_limits = checked_call('compose',rules+'\n核对底稿：'+dump(context),
                           evidence_first.PROSE,prepare_report,tokens=3600)
     limitations = list(ledger['findings']) + prose_limits
     if any(not event['bound'] for event in ledger['events']):
@@ -864,7 +866,7 @@ def execute_evidence_first(case, folder, pack, ids, trace, checked_call):
     if limitations:
         quality['limitations'] = limitations
     reader_html(case,{'report':report,'created_at':now(),'editorial_quality':quality})
-    result = {'report':report,'trace':trace,'workflow_version':VERSION,'quality':quality}
+    result = {'report':report,'trace':trace,'workflow_version':version,'quality':quality}
     if not limitations:
         write_json(folder/'accepted.json',result)
     return result
@@ -921,8 +923,8 @@ def execute(case,folder,progress=lambda stage:None,*,version=VERSION):
         observations.extend(rows)
     pack['image_observations']=observations
     write_json(folder/'evidence-pack.json',pack)
-    if version == VERSION:
-        return execute_evidence_first(case,folder,pack,ids,trace,checked_call)
+    if version in EVIDENCE_FIRST_VERSIONS:
+        return execute_evidence_first(case,folder,pack,ids,trace,checked_call,version)
     context=RULES+'\n材料（短编号与原记录一一对应，时间字段为消息时间）：'+dump(pack)
     if version in COMPARATIVE_VERSIONS:
         context = READING_RULES + '\n' + CONTEXT_RULE + '\n' + context

@@ -50,7 +50,7 @@ def signature(case,method,workflow=None):
             components['sequence_rules'] = compact.event_sequence.RULES
         if workflow == compact.CROSSCHECK_VERSION:
             components['review_crosscheck'] = compact.REVIEW_CROSSCHECK
-        if workflow == compact.VERSION:
+        if workflow in compact.EVIDENCE_FIRST_VERSIONS:
             components['binding_rules'] = compact.evidence_first.RULES
             components['writer_rules'] = compact.evidence_first.WRITE_RULES
         return digest(components)
