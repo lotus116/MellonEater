@@ -36,6 +36,27 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(gen.call_count,2);img.unlink()
             with self.assertRaisesRegex(ValueError,'图片缺失'):self.generate(images=['a.png'])
             self.assertEqual(gen.call_count,2)
+    def test_cross_run_reuse_only_matches_exact_vision_calls(self):
+        uploads = self.root/'uploads'
+        uploads.mkdir()
+        image = uploads/'sample.png'
+        image.write_bytes(b'original')
+        previous = self.root/'runs'/'previous'/'editorial'
+        current = self.folder/'editorial'
+        core.write_json(self.folder/'manifest.json',{'reuse_vision_from':'previous'})
+        with patch.object(provider,'_generate_once',return_value=({'observations':[]},STATS)) as gen:
+            provider.generate('read image',None,previous,'vision_0',['sample.png'])
+            _, stats = provider.generate('read image',None,current,'vision_0',['sample.png'])
+            self.assertEqual(stats['reused_from'],'previous')
+            self.assertEqual(gen.call_count,1)
+            self.assertEqual(usage_summary(self.folder)['requests'],0)
+            separate = self.root/'runs'/'other'/'editorial'
+            core.write_json(separate.parent/'manifest.json',{'reuse_vision_from':'previous'})
+            provider.generate('read image',None,separate,'compose',['sample.png'])
+            image.write_bytes(b'changed')
+            _, stats = provider.generate('read image',None,current,'vision_0',['sample.png'])
+            self.assertNotIn('reused_from',stats)
+            self.assertEqual(gen.call_count,3)
     def test_429_retries_bounded_and_records_every_attempt(self):
         with patch.object(provider,'_generate_once',side_effect=[CallFailure('limited',kind='429',retryable=True),({},STATS)]) as gen,patch('chigua.checkpoints.time.sleep') as sleep:
             self.generate();self.assertEqual(gen.call_count,2);sleep.assert_called_once()

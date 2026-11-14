@@ -179,7 +179,8 @@ def _launch(job,case,method,background):
     return get_job(job['id'])
 
 
-def start(case, method='B1', *, force=False, max_requests=20, background=True,workflow=None,max_total_tokens=60000):
+def start(case, method='B1', *, force=False, max_requests=20, background=True,workflow=None,max_total_tokens=60000,
+          reuse_vision_from=None):
     if method not in ['B0', 'B1', 'B2', 'A1']:raise ValueError('未知分析方法。')
     if not isinstance(max_requests,int) or not 4<=max_requests<=100:raise ValueError('请求上限应为 4 至 100 次。')
     workflow=selected_workflow(method,workflow)
@@ -192,10 +193,17 @@ def start(case, method='B1', *, force=False, max_requests=20, background=True,wo
                 if manifest.get('signature')==key:return get_job(p.parent.name)
         if any(j['status']=='running' for j in JOBS.values()):raise ValueError('已有分析正在运行，请等待完成后再开始。')
         if not provider.status()['available']:raise ValueError('模型入口尚未配置；示例报告和材料查看仍可使用。')
+        if reuse_vision_from is not None:
+            if not isinstance(reuse_vision_from,str) or not reuse_vision_from.isalnum():
+                raise ValueError('读图来源编号无效。')
+            source = json.loads((DATA/'runs'/reuse_vision_from/'input.json').read_text())
+            if source['id'] != case['id'] or source['messages'] != case['messages']:
+                raise ValueError('读图来源必须为同一案例与同一份材料。')
         jid=uuid.uuid4().hex;folder=DATA/'runs'/jid
         write_json(folder/'input.json',case)
         write_json(folder/'manifest.json',{'signature':key,'method':method,'config':provider.config_identity(),
-            'max_requests':max_requests,'max_total_tokens':max_total_tokens,'created_at':now(),'workflow':workflow})
+            'max_requests':max_requests,'max_total_tokens':max_total_tokens,'created_at':now(),'workflow':workflow,
+            'reuse_vision_from':reuse_vision_from})
         job={'id':jid,'case_id':case['id'],'status':'running','stage':'queued','step':0,
              'total':1 if method in ['B0','B1'] else 4,'created_at':now(),'max_requests':max_requests,'method':method,'workflow':workflow,'max_total_tokens':max_total_tokens}
         return _launch(job,case,method,background)

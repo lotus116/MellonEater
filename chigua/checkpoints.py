@@ -89,6 +89,19 @@ def _call_locked(prompt,schema,folder,stage,images,config,media,execute,recover=
             raise CallFailure('阶段缓存损坏，已停止以避免重复计费。请检查本机缓存。',kind='cache') from None
     root=run_root(folder);manifest=root/'manifest.json'
     policy=json.loads(manifest.read_text()) if manifest.exists() else {}
+    source_id = policy.get('reuse_vision_from')
+    if folder.name=='editorial' and stage.startswith('vision_') and isinstance(source_id,str) and source_id.isalnum():
+        source = root.parent/source_id/'editorial'/'.calls'/key/'completed.json'
+        if source.is_file():
+            try:
+                saved = json.loads(source.read_text())
+                if saved['key'] != key or saved['checksum'] != digest(saved['value']):
+                    raise ValueError('checksum')
+                stats = {**saved['stats'],'cached':True,'seconds':0,'checkpoint':key,'reused_from':source_id}
+            except (OSError, KeyError, TypeError, ValueError) as exc:
+                raise CallFailure('旧读图缓存校验失败。',kind='cache') from exc
+            write_json(cache,{**saved,'stats':stats})
+            return saved['value'],stats
     limit=policy.get('max_requests',20)
     attempts=sorted(cache_dir.glob('attempt-*/attempt.json'))
     # A request interrupted after dispatch might already have been billed.
