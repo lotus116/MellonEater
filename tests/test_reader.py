@@ -93,6 +93,12 @@ class ReaderTests(unittest.TestCase):
         rows[0]['text']='原始材料的完整末尾。'
         rows[0]['source_reference']={'media':[{'status':'unavailable','reason':'missingImage'}]}
         r=reader();r['chapters'][0]['quote_text']=''
+        r['story']=story()
+        r['story']['arc'][0].update(event_time='昨天二十一点',source_attribution='图内文字，小群')
+        r['dispute_comparisons']=[{'topic':'转账耗时','limit':'缺完整流水。','accounts':[
+            {'speaker':'甲','statement':'约两天','source_ids':[rows[0]['id']]},
+            {'speaker':'乙','statement':'约四天','source_ids':[rows[0]['id']]},
+        ]}]
         case={'messages':rows};run={'report':{'reader':r},'created_at':'2026-11-14T00:00:00Z'}
         with tempfile.TemporaryDirectory() as d:
             full=Path(d)/'full.pdf';body=Path(d)/'body.pdf'
@@ -100,6 +106,8 @@ class ReaderTests(unittest.TestCase):
             report.report_pdf(case,run,body,include_sources=False)
             pdf=PdfReader(full);draft=PdfReader(body)
             text=''.join(p.extract_text() for p in pdf.pages)
+            for snippet in ('各方怎么说','约两天','约四天','昨天二十一点','图内文字，小群'):
+                self.assertIn(snippet,text)
             self.assertIn('原文附录',text);self.assertIn('原始材料的完整末尾。',text)
             self.assertIn('导出包中没有找到对应图片',text)
             self.assertNotIn('原文附录\n以下保留',''.join(p.extract_text() for p in draft.pages))

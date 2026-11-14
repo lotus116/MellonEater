@@ -384,14 +384,37 @@ def reader_pdf(case,run,path,*,include_sources=True):
         arc_body=ParagraphStyle('ArcBody',parent=body,fontSize=10.8,leading=18,spaceAfter=5)
         rows=[]
         for index,step in enumerate(spine['arc'],1):
-            rows.append([[p(str(index)+' / '+step['stage'],arc_label),p(step['order_basis'],small)],
-                         [p(step['happened'],arc_body),p('变化：'+step['changed'],small),references(step['source_ids'],'')]])
+            meta = [step.get(key) for key in ('event_time','order_basis','source_attribution')]
+            details = [p(step['happened'],arc_body)]
+            if step['changed']:
+                details.append(p(step['changed'],small))
+            details.append(references(step['source_ids'],''))
+            rows.append([[p(str(index)+' / '+step['stage'],arc_label)]+[p(x,small) for x in meta if x],details])
         table=Table(rows,colWidths=[116,379],hAlign='LEFT')
         table.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'TOP'),
             ('LINEBELOW',(0,0),(-1,-2),.5,colors.HexColor('#dfe4ed')),
             ('LEFTPADDING',(0,0),(-1,-1),7),('RIGHTPADDING',(0,0),(-1,-1),9),
             ('TOPPADDING',(0,0),(-1,-1),8),('BOTTOMPADDING',(0,0),(-1,-1),4)]))
         story.extend([table,Spacer(1,8)])
+    if r.get('dispute_comparisons'):
+        story.append(p('各方怎么说',heading))
+        for dispute in r['dispute_comparisons']:
+            story.append(p(dispute['topic'],deck))
+            for account in dispute['accounts']:
+                story.extend([p(account['speaker']+' · '+account['statement']),references(account['source_ids'],'')])
+            if dispute['limit']:
+                story.append(p(dispute['limit'],small))
+    if r.get('assessment'):
+        story.append(p('怎么看双方的做法',heading))
+        for item in r['assessment']:
+            story.extend([p(item['title'],deck),p(item['judgment']),p(item['observation'],small),
+                          references(item['source_ids'],'')])
+            if item['inference']:
+                story.append(p('一种解释　'+item['inference'],small))
+            if item['counterpoint']:
+                story.append(p(item['counterpoint'],small))
+            if item['conflict_ids']:
+                story.append(references(item['conflict_ids'],'对照材料　'))
     for chapter in r['chapters']:
         story.append(p(chapter['title'],heading))
         refs=[]

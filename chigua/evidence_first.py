@@ -1,7 +1,8 @@
 """Bind source excerpts before the model writes the narrative."""
 import re
 
-from . import event_sequence
+from . import event_sequence, provider
+from .checkpoints import CallFailure
 from .core import ROOT, STR, STRS, TIMED_READER_SCHEMA, schema_obj, validate_schema
 
 RULES = (ROOT/'skills/chigua-analysis/references/evidence-first.md').read_text()
@@ -316,6 +317,77 @@ def attach(draft, ledger):
             'limitations':ledger['limits'],'reader':reader}
 
 
+def ledger_prose(ledger):
+    """Readable draft assembled directly from evidence while prose is pending."""
+    events = ledger['events']
+    known = [event for event in events if event['bound']]
+    return {
+        'title':'事件经过与各方说法','lead':'已整理能回查的经过和各方说法。可展开时间线查看各条材料的出处。',
+        'verdict':'请对照原文和各方说法，确认材料能够支持的范围。',
+        'verdict_source_ids':[],'central_question':'事情是怎样发展的？',
+        'timeline_note':'按有依据的顺序整理。缺少原始时间或归属的材料请查看节点标注。',
+        'open_questions':ledger['limits'],'assessment':[],
+        'chapters':[{'title':'可核对的经过','paragraphs':[
+            {'text':event['attribution']+'\n'+event['excerpt'],'source_ids':event['source_ids']}
+            for event in (known[:6] or events[:1])
+        ]}],
+    }
+
+
+def publication_ledger(ledger, pack):
+    """Refine display fields using the very same scoped quote as the binding."""
+    messages = {row['id']:row for row in pack['messages']}
+    for item in ledger['events']:
+        source = messages[item['source_ids'][0]]
+        if source.get('image_observation_ref') or not item['attribution'].startswith('据'):
+            continue
+        text = item['excerpt']
+        if item['scene']=='未知':
+            heading = re.match(r'^【([^】]+)】',text)
+            if heading:
+                rest = text[heading.end():].lstrip()
+                # The outer group is provenance. A nested excerpt has
+                # its own header; a private screenshot may be named there.
+                nested = re.match(r'^([^。！？：，\n]+)',rest)
+                if '补贴私信' in heading[1]:
+                    item['scene'] = '私聊'
+                elif re.search(r'补贴|摘录|旧对话',heading[1]) and nested:
+                    item['scene'] = scene_for(nested[1])
+                elif re.match(r'贴完.{0,14}私信',rest) and item['kind']=='回击':
+                    item['scene'] = '私聊'
+                if item['scene']!='未知':
+                    prefix, separator, actor = item['attribution'].partition(' · ')
+                    item['attribution'] = prefix+'，'+item['scene']+separator+actor
+    return ledger
+
+
+def parse_prose(text):
+    """Keep independently usable sections from a returned JSON object."""
+    try:
+        value = provider.parse_json(text)
+    except ValueError as exc:
+        raise CallFailure('成稿没有返回可解析的报告对象。',kind='invalid_output') from exc
+    if not isinstance(value,dict):
+        raise CallFailure('成稿没有返回可解析的报告对象。',kind='invalid_output')
+
+    def clean(item, spec):
+        kind = spec['type']
+        if kind == 'string':
+            return item if isinstance(item,str) else ''
+        if kind == 'array':
+            child = spec['items']
+            expected = str if child['type']=='string' else dict
+            if not isinstance(item,list) or (expected is str and any(not isinstance(x,str) for x in item)):
+                return []
+            return [clean(x,child) for x in item if isinstance(x,expected)]
+        return {key:clean(item.get(key),child) for key, child in spec['properties'].items()}
+
+    normalized = clean(value,PROSE)
+    if not any(normalized[key] for key in ('chapters','assessment','verdict')):
+        raise CallFailure('成稿未返回正文、现状或判断。',kind='invalid_output')
+    return normalized, normalized != value
+
+
 def reconcile_prose(draft, ledger):
     """Resolve contrast links against the ledger and isolate unsupported prose."""
     approved = {sid for event in ledger['events'] for sid in event['source_ids']}
@@ -405,6 +477,11 @@ def check_prose(draft, ledger):
         return False
 
     findings = []
+    original_scenes = {event['scene'] for event in ledger['events'] if event['kind']=='原始言行'}
+    if (original_scenes & {'小群','群聊','公开群'} and '私聊' not in original_scenes
+            and re.search(r'把(?:私下交涉|私聊原话|私聊对话).{0,14}(?:公开|群)',draft['lead'])):
+        draft['lead'] = '先看时间线中的前情和争执经过，再对照各方关于转折的说法。'
+        findings.append('导语的场景归属未能核对，已改用时间线作为阅读入口。')
     for chapter in draft['chapters']:
         for para in chapter['paragraphs']:
             if mismatch(para['text'],para['source_ids']):

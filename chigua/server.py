@@ -125,7 +125,9 @@ class Handler(BaseHTTPRequestHandler):
                     run = {'report':draft,'created_at':job['created_at'],'draft':True,
                            'draft_reason':job.get('error','')}
                     return self.send(report_html(case,run),ctype='text/html; charset=utf-8')
-                run=get_run(rid); c=pipeline.load_case(run['case_id'])
+                run=get_run(rid)
+                snapshot=DATA/'runs'/rid/'input.json'
+                c=json.loads(snapshot.read_text()) if snapshot.is_file() else pipeline.load_case(run['case_id'])
                 if bits[2]=='html':
                     return self.send(report_html(c,run),ctype='text/html; charset=utf-8')
                 if bits[2]=='json':

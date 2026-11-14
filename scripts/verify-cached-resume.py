@@ -28,15 +28,12 @@ def verify(run_id, recover_raw=False):
     if not run_id.isalnum():
         raise ValueError('Invalid run ID')
     original = core.DATA / 'runs' / run_id
-    manifest = json.loads((original / 'manifest.json').read_text())
     result = json.loads((original / 'result.json').read_text())
     case = json.loads((original / 'input.json').read_text())
     assert result['status'] == 'completed'
     before = snapshot(original)
     original_usage = usage_summary(original)
-    config = manifest['config']
-    env = {'CHIGUA_PROVIDER': config['provider'], 'CHIGUA_MODEL': config['model'],
-           'CHIGUA_BASE_URL': config['base_url'], 'CHIGUA_API_KEY': 'offline-test-no-secret'}
+    env = {'CHIGUA_PROVIDER': 'manual', 'CHIGUA_API_KEY': ''}
     with tempfile.TemporaryDirectory(prefix='chigua-resume-check-') as temp:
         isolated = Path(temp)
         target = isolated / 'runs' / run_id
@@ -53,9 +50,12 @@ def verify(run_id, recover_raw=False):
         core.write_json(target / 'job.json', job)
         recovered_attempt = None
         if recover_raw:
-            cache = next(target.rglob('completed.json'))
-            recovered_attempt = sorted(cache.parent.glob('attempt-*/attempt.json'))[-1]
-            assert (recovered_attempt.parent / 'raw-response.json').is_file()
+            attempts = [p for p in target.rglob('attempt-*/attempt.json')
+                        if (p.parent/'raw-response.json').is_file() and (p.parent.parent/'completed.json').is_file()]
+            if not attempts:
+                raise ValueError('No recoverable API response is available for this run')
+            recovered_attempt = attempts[0]
+            cache = recovered_attempt.parent.parent/'completed.json'
             attempt = json.loads(recovered_attempt.read_text())
             attempt['status'] = 'running'
             core.write_json(recovered_attempt, attempt)
@@ -64,11 +64,10 @@ def verify(run_id, recover_raw=False):
         with patch.dict(os.environ, env), patch.object(core, 'DATA', isolated), \
                 patch.object(pipeline, 'DATA', isolated), patch.object(provider, 'DATA', isolated), \
                 patch.object(report, 'DATA', isolated), \
-                patch.object(provider, 'config_identity', return_value=config), \
                 patch.object(provider, '_generate_once', side_effect=AssertionError('Model call forbidden')) as model, \
                 patch('urllib.request.urlopen', side_effect=AssertionError('Network forbidden')) as network:
             assert pipeline.get_job(run_id)['status'] == 'interrupted'
-            resumed = pipeline.resume(run_id, allow_uncertain=True, background=False)
+            resumed = pipeline.resume(run_id, local_only=True, background=False)
             assert resumed['status'] == 'completed', resumed.get('error')
             model.assert_not_called()
             network.assert_not_called()

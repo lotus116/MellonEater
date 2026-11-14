@@ -107,7 +107,8 @@ def _call_locked(prompt,schema,folder,stage,images,config,media,execute,recover=
     # A request interrupted after dispatch might already have been billed.
     if attempts:
         last=json.loads(attempts[-1].read_text())
-        if (last.get('status')=='running' or last.get('status')=='failed' and last.get('kind')=='invalid_output') and recover:
+        if (last.get('status')=='running' or last.get('status')=='failed'
+                and last.get('kind') in {'invalid_output','local_error'}) and recover:
             try:recovered=recover(attempts[-1].parent)
             except (ValueError,KeyError,TypeError,OSError):recovered=None
             if recovered:
@@ -120,10 +121,12 @@ def _call_locked(prompt,schema,folder,stage,images,config,media,execute,recover=
             raise CallFailure('上次请求中断，当前阶段是否已计费未知。确认后可仅重试这一步。',kind='interrupted',uncertain=True)
         if 'stage_options' in config and last.get('kind') in {'invalid_output','output_length'}:
             raise CallFailure(last.get('message','已读取该步骤保存的失败记录。'),kind=last['kind'])
-    if policy.get('retry_uncertain'):
-        policy.pop('retry_uncertain');write_json(manifest,policy)
+        if last.get('kind')=='local_error':
+            raise CallFailure('上次调用出现本地错误；未重复发送请求。请检查已保存的响应。',kind='local_error')
     if policy.get('local_only'):
         raise CallFailure('仅复验已保存输出：该阶段没有可用缓存，未发出模型请求。',kind='local_recheck')
+    if policy.get('retry_uncertain'):
+        policy.pop('retry_uncertain');write_json(manifest,policy)
     for retry in range(3):
         usage=usage_summary(root)
         token_limit=policy.get('max_total_tokens')
@@ -143,7 +146,7 @@ def _call_locked(prompt,schema,folder,stage,images,config,media,execute,recover=
             write_json(attempt/'attempt.json',{**record,'status':'completed','ended_at':now()})
             return value,stats
         except Exception as exc:
-            kind=getattr(exc,'kind','invalid_output')
+            kind=getattr(exc,'kind','local_error')
             write_json(attempt/'attempt.json',{**record,'status':'failed','ended_at':now(),
                 'kind':kind,'uncertain':getattr(exc,'uncertain',False),
                 **({'message':str(exc)} if isinstance(exc,CallFailure) else {})})

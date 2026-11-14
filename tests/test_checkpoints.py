@@ -198,6 +198,22 @@ class CheckpointTests(unittest.TestCase):
             self.generate()
             with patch.dict(os.environ,{'CHIGUA_API_KEY':''}):self.generate()
             self.assertEqual(gen.call_count,1)
+
+    def test_codex_durable_response_recovers_before_reissue(self):
+        def interrupted(prompt,schema,folder,stage,images):
+            (folder/f'{stage}.response.txt').write_text('{"ok":true}')
+            core.write_json(folder/'usage.json',STATS['usage'])
+            raise KeyboardInterrupt
+        with patch.dict(os.environ,{'CHIGUA_PROVIDER':'codex'}):
+            with patch.object(provider,'_generate_once',side_effect=interrupted):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.generate(schema={'type':'object'})
+            with patch.object(provider,'_generate_once') as gen:
+                value,stats=self.generate(schema={'type':'object'})
+                gen.assert_not_called()
+        self.assertEqual(value,{'ok':True})
+        self.assertEqual(stats['provider'],'codex')
+        self.assertEqual(usage_summary(self.folder)['requests'],1)
     def test_resume_token_threshold_can_only_increase_explicitly(self):
         case={'id':'synthetic','messages':[],'input_hash':'test'}
         with patch.object(provider,'_generate_once',side_effect=CallFailure('temporary failure')):
@@ -207,7 +223,8 @@ class CheckpointTests(unittest.TestCase):
                 pipeline.resume(j['id'],max_total_tokens=999,background=False)
             launch.assert_not_called()
             pipeline.resume(j['id'],max_total_tokens=2000,background=False)
-            self.assertEqual(json.loads((self.root/'runs'/j['id']/'manifest.json').read_text())['max_total_tokens'],2000)
+            self.assertEqual(launch.call_args.kwargs['policy']['max_total_tokens'],2000)
+            self.assertEqual(json.loads((self.root/'runs'/j['id']/'manifest.json').read_text())['max_total_tokens'],1000)
     def test_api_http_retry_classification_and_limit(self):
         import urllib.error
         for code,expected in [(429,3),(503,3),(400,1),(401,1),(402,1),(504,1)]:

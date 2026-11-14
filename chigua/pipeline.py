@@ -33,12 +33,13 @@ def selected_workflow(method,workflow=None):
     return workflow or (os.getenv('CHIGUA_WORKFLOW') or compact.VERSION if method=='B1' else WORKFLOW_VERSION)
 
 
-def signature(case,method,workflow=None):
+def signature(case,method,workflow=None,*,config=None):
     images=list(dict.fromkeys(m['image'] for m in case['messages'] if m.get('image')))
     workflow = selected_workflow(method,workflow)
+    config=provider.config_identity() if config is None else config
     if workflow in compact.SUPPORTED_VERSIONS:
         components = {'case':case,'method':method,'media':media_hashes(images,DATA),
-                      'config':provider.config_identity(),'workflow':workflow,'rules':compact.RULES,'policy':compact.POLICY}
+                      'config':config,'workflow':workflow,'rules':compact.RULES,'policy':compact.POLICY}
         if workflow in compact.COMPARATIVE_VERSIONS:
             components['reading_rules'] = compact.READING_RULES
             components['context_rule'] = compact.CONTEXT_RULE
@@ -55,7 +56,7 @@ def signature(case,method,workflow=None):
             components['writer_rules'] = compact.evidence_first.WRITE_RULES
         return digest(components)
     return digest({'case':case,'method':method,'media':media_hashes(images,DATA),
-        'config':provider.config_identity(),'workflow':WORKFLOW_VERSION,'editor':EDITOR_VERSION,
+        'config':config,'workflow':WORKFLOW_VERSION,'editor':EDITOR_VERSION,
         'rules':RULES,'reader_rules':READER_RULES})
 
 
@@ -88,7 +89,7 @@ def get_job(jid):
             if history:
                 last=history[-1];job['diagnostics']=(last.get('review') or {}).get('issues',[])+[{'problem':x} for x in last.get('issues',[])]
     job['can_resume']=job.get('error_kind') not in ['editorial_exhausted','review_invalid','structure','visual_mapping','workflow_changed','cache','output_length']
-    if job['status'] in {'failed','interrupted'} and (folder/'editorial/review-draft.json').is_file():
+    if job['status'] in {'running','failed','interrupted'} and (folder/'editorial/review-draft.json').is_file():
         job['draft_available'] = True
     if (job['status']=='failed' and job.get('workflow')==compact.PREVIOUS_VERSION
             and job.get('error_kind')=='review_invalid'
@@ -177,9 +178,17 @@ def run_pipeline(jid, case, method):
     persist(job)
 
 
-def _launch(job,case,method,background):
+def _launch(job,case,method,background,*,policy=None):
     fd=worker_lock()
-    JOBS[job['id']]=job;persist(job)
+    try:
+        folder=DATA/'runs'/job['id']
+        if not (folder/'input.json').exists():write_json(folder/'input.json',case)
+        if policy is not None:write_json(folder/'manifest.json',policy)
+        persist(job)
+        JOBS[job['id']]=job
+    except BaseException:
+        os.close(fd)
+        raise
     def work():
         try:run_pipeline(job['id'],case,method)
         finally:fcntl.flock(fd,fcntl.LOCK_UN);os.close(fd)
@@ -199,7 +208,9 @@ def start(case, method='B1', *, force=False, max_requests=20, background=True,wo
         if not force:
             for p in sorted((DATA/'runs').glob('*/manifest.json'),key=lambda p:p.stat().st_mtime,reverse=True):
                 manifest=json.loads(p.read_text())
-                if manifest.get('signature')==key:return get_job(p.parent.name)
+                if manifest.get('signature')==key and any(
+                        (p.parent/name).is_file() for name in ('job.json','result.json')):
+                    return get_job(p.parent.name)
         if any(j['status']=='running' for j in JOBS.values()):raise ValueError('已有分析正在运行，请等待完成后再开始。')
         if not provider.status()['available']:raise ValueError('模型入口尚未配置；示例报告和材料查看仍可使用。')
         if reuse_vision_from is not None:
@@ -208,14 +219,13 @@ def start(case, method='B1', *, force=False, max_requests=20, background=True,wo
             source = json.loads((DATA/'runs'/reuse_vision_from/'input.json').read_text())
             if source['id'] != case['id'] or source['messages'] != case['messages']:
                 raise ValueError('读图来源必须为同一案例与同一份材料。')
-        jid=uuid.uuid4().hex;folder=DATA/'runs'/jid
-        write_json(folder/'input.json',case)
-        write_json(folder/'manifest.json',{'signature':key,'method':method,'config':provider.config_identity(),
+        jid=uuid.uuid4().hex
+        policy={'signature':key,'method':method,'config':provider.config_identity(),
             'max_requests':max_requests,'max_total_tokens':max_total_tokens,'created_at':now(),'workflow':workflow,
-            'reuse_vision_from':reuse_vision_from})
+            'reuse_vision_from':reuse_vision_from}
         job={'id':jid,'case_id':case['id'],'status':'running','stage':'queued','step':0,
              'total':1 if method in ['B0','B1'] else 4,'created_at':now(),'max_requests':max_requests,'method':method,'workflow':workflow,'max_total_tokens':max_total_tokens}
-        return _launch(job,case,method,background)
+        return _launch(job,case,method,background,policy=policy)
 
 
 def resume(jid,*,allow_uncertain=False,max_requests=None,max_total_tokens=None,background=True,local_only=False):
@@ -225,16 +235,17 @@ def resume(jid,*,allow_uncertain=False,max_requests=None,max_total_tokens=None,b
         if (job.get('error_kind') in ['editorial_exhausted','review_invalid','structure','visual_mapping','workflow_changed']
                 and job.get('can_resume') is False and not local_only):
             raise ValueError('这次失败需要修正具体问题，原样续跑不会改善，已停止追加调用。请查看问题详情；新版流程须明确新建任务。')
-        if job.get('error_kind') in ['cache','output_length']:
+        if job.get('error_kind') in ['cache','output_length'] and not local_only:
             raise ValueError('该问题需要先修复缓存或输出长度设置，原样继续可能重复失败；已停止追加请求。')
         if any(j['status']=='running' for j in JOBS.values()):raise ValueError('已有分析正在运行，请等待完成后再继续。')
         folder=DATA/'runs'/jid
         if not (folder/'manifest.json').exists():raise ValueError('旧版本任务没有可靠检查点，请新建分析；原记录保留。')
         manifest=json.loads((folder/'manifest.json').read_text());case=json.loads((folder/'input.json').read_text())
-        if signature(case,manifest['method'],manifest.get('workflow',WORKFLOW_VERSION))!=manifest['signature']:
+        config = manifest.get('config') if local_only else None
+        if signature(case,manifest['method'],manifest.get('workflow',WORKFLOW_VERSION),config=config)!=manifest['signature']:
             raise ValueError('模型、材料或流程规则已改变。为避免混用结果，请恢复原设置，或明确新建分析。')
         if not local_only and not provider.status()['available']:raise ValueError('请先配置原模型入口，密钥可以重新填写。')
-        if job.get('uncertain') and not allow_uncertain:
+        if job.get('uncertain') and not (allow_uncertain or local_only):
             raise ValueError('中断的请求可能已计费。请确认仅重试未完成阶段。')
         if max_requests is not None:
             if not isinstance(max_requests,int) or not manifest['max_requests']<=max_requests<=100:
@@ -244,11 +255,12 @@ def resume(jid,*,allow_uncertain=False,max_requests=None,max_total_tokens=None,b
             if not isinstance(max_total_tokens,int) or not manifest.get('max_total_tokens',1000)<=max_total_tokens<=1000000:
                 raise ValueError('继续时只能明确提高已记录 token 阈值，最多 1,000,000。')
             manifest['max_total_tokens']=max_total_tokens
-        manifest['retry_uncertain']=allow_uncertain;manifest['local_only']=local_only;write_json(folder/'manifest.json',manifest)
+        manifest['retry_uncertain']=allow_uncertain and not local_only
+        manifest['local_only']=local_only
         job.pop('error_kind',None)
         job.pop('diagnostics',None)
         job.update(status='running',error='',uncertain=False,max_requests=manifest['max_requests'],max_total_tokens=manifest.get('max_total_tokens'))
-        return _launch(job,case,manifest['method'],background)
+        return _launch(job,case,manifest['method'],background,policy=manifest)
 
 
 def import_result(case, report, origin='当前会话分析'):

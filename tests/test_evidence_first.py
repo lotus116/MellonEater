@@ -46,7 +46,7 @@ class EvidenceFirstTests(unittest.TestCase):
                           [{'topic':'转账间隔','limit':'缺少流水。',
                             'accounts':[dispute('S002','过了两天才转'),dispute('S003','是四天')]}])
         with tempfile.TemporaryDirectory() as work, patch.object(provider,'generate',side_effect=[
-            (evidence,{}),(prose('S001'),{}),
+            (evidence,{}),(json.dumps(prose('S001')),{}),
         ]) as model:
             result = compact.execute(case,Path(work))
             self.assertTrue((Path(work)/'bound-evidence.json').exists())
@@ -108,7 +108,7 @@ class EvidenceFirstTests(unittest.TestCase):
         ]
         before = copy.deepcopy(draft)
         with tempfile.TemporaryDirectory() as work, patch.object(provider,'generate',side_effect=[
-            (source,{}),(draft,{}),
+            (source,{}),(json.dumps(draft),{}),
         ]) as model:
             result = compact.execute(case,Path(work))
         self.assertEqual([call.args[3] for call in model.call_args_list],['bind_sources','compose'])

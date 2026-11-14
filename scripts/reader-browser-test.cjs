@@ -31,7 +31,7 @@ const fs=require('node:fs');
   if(await page.locator('.event-timeline > li[hidden]').count())throw Error('all events did not restore');
  }
  if(hasAssessment){
-  const item=page.locator('.assessment-item').first();
+  const item=page.locator('#assessment .assessment-item').first();
   if(!await item.locator('.behavior-judgment').isVisible())throw Error('behavior judgment should be readable at a glance');
   await item.locator('summary').click();await item.locator('.refs a').first().click();
   await page.locator('.original:target[open]').waitFor({timeout:5000});
@@ -41,7 +41,8 @@ const fs=require('node:fs');
  if(await page.locator('.chapter:not([open])').count())throw Error('expand not applied (CSP?)');
  await page.getByRole('button',{name:'收起详细经过',exact:true}).click();
  if(await page.locator('.chapter[open]').count())throw Error('collapse failed');
- await page.locator('.now .refs a').first().click();
+ const currentRefs=page.locator('.now .refs a');
+ await (await currentRefs.count()?currentRefs:page.locator('#turns .turn .refs a')).first().evaluate(a=>a.click());
  await page.locator('.original:target[open]').waitFor({timeout:5000});
  const imageSources=page.locator('.original').filter({has:page.locator('.zoom-image')});
  const imageSource=await imageSources.count()?imageSources.first():page.locator('.original').first();

@@ -10,9 +10,10 @@ from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, ASSESSMENT_READER_SCHEMA, T
 from .checkpoints import CallFailure,digest
 from .editor import normalize_presentations
 
-VERSION='compact-v15'
+VERSION='compact-v16'
+SOURCE_IDS_VERSION='compact-v15'
 EVIDENCE_FIRST_PREVIOUS_VERSION='compact-v14'
-EVIDENCE_FIRST_VERSIONS={VERSION,EVIDENCE_FIRST_PREVIOUS_VERSION}
+EVIDENCE_FIRST_VERSIONS={VERSION,SOURCE_IDS_VERSION,EVIDENCE_FIRST_PREVIOUS_VERSION}
 CROSSCHECK_VERSION='compact-v13'
 ACTION_PREVIOUS_VERSION='compact-v12'
 ANCHORED_PREVIOUS_VERSION='compact-v11'
@@ -839,10 +840,12 @@ def execute_evidence_first(case, folder, pack, ids, trace, checked_call, version
     else:
         rules += ' source_ids 和 conflict_ids 只填底稿里的 S 编号。反证没有原文编号时填空数组。'
 
-    def prepare_report(value):
-        prose = copy.deepcopy(value)
-        prose_limits = evidence_first.reconcile_prose(prose,ledger)
-        prose_limits.extend(evidence_first.check_prose(prose,ledger))
+    if version == VERSION:
+        # Keep the exact upstream request stable across local presentation
+        # fixes; the final ledger can improve without reissuing compose.
+        ledger = evidence_first.publication_ledger(copy.deepcopy(ledger),pack)
+
+    def assemble(prose):
         draft = evidence_first.attach(prose,ledger)
         draft['timeline'] = derived_timeline(draft['reader']['story']['arc'])
         reader = draft['reader']
@@ -853,10 +856,33 @@ def execute_evidence_first(case, folder, pack, ids, trace, checked_call, version
         normalized['reader'],_ = normalize_presentations(normalized['reader'],case['messages'])
         remove_headline_durations(draft,normalized)
         validate_report(normalized,case['messages'])
-        return normalized,prose_limits
+        return normalized
 
-    report, prose_limits = checked_call('compose',rules+'\n核对底稿：'+dump(context),
-                          evidence_first.PROSE,prepare_report,tokens=3600)
+    def prepare_report(value):
+        if version == VERSION:
+            prose, repaired = evidence_first.parse_prose(value)
+        else:
+            prose, repaired = copy.deepcopy(value), False
+        prose_limits = evidence_first.reconcile_prose(prose,ledger)
+        prose_limits.extend(evidence_first.check_prose(prose,ledger))
+        if repaired:
+            prose_limits.append('模型返回的部分字段不完整，已保留可核对的内容。')
+        return assemble(prose),prose_limits
+
+    task = rules+'\n核对底稿：'+dump(context)
+    prose_schema = evidence_first.PROSE
+    if version == VERSION:
+        draft = assemble(evidence_first.ledger_prose(ledger))
+        write_json(folder/'review-draft.json',draft)
+        task += '\n仅输出一个 JSON 对象，结构如下：'+dump(prose_schema)
+        prose_schema = None
+    try:
+        report, prose_limits = checked_call('compose',task,prose_schema,prepare_report,tokens=3600)
+    except CallFailure as exc:
+        if (version not in EVIDENCE_FIRST_VERSIONS or exc.kind not in {'structure','budget'}):
+            raise
+        report = assemble(evidence_first.ledger_prose(ledger))
+        prose_limits = ['阅读版未能完整生成，当前网页使用已核对的材料底稿。'+str(exc)]
     limitations = list(ledger['findings']) + prose_limits
     if any(not event['bound'] for event in ledger['events']):
         limitations.append('存在归属尚待核对的动作，时间线已按原文保留相关缺口。')

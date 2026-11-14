@@ -100,10 +100,14 @@ def deepseek_options():
 
 
 def generate(prompt, schema, run_dir: Path, stage, images=(), *, options=None):
-    from .checkpoints import call,media_hashes
+    from .checkpoints import call,media_hashes,run_root
     # Reading an exact cached response does not need a live credential. A new
     # dispatch still checks availability in _generate_once, after local_only.
-    config=config_identity()
+    manifest=run_root(run_dir)/'manifest.json'
+    policy=json.loads(manifest.read_text()) if manifest.is_file() else {}
+    config=policy.get('config') if policy.get('local_only') else None
+    if config is None:
+        config=config_identity()
     if options is not None:
         if set(options)-{'max_tokens','thinking','image_labels'}:raise ValueError('未知阶段选项。')
         if not 256<=options.get('max_tokens',6000)<=12000:raise ValueError('阶段输出预算无效。')
@@ -113,15 +117,31 @@ def generate(prompt, schema, run_dir: Path, stage, images=(), *, options=None):
     return call(prompt,schema,run_dir,stage,images,config,media_hashes(images,DATA),
         lambda attempt:(_generate_once(prompt,schema,attempt,stage,images) if options is None else
                         _generate_once(prompt,schema,attempt,stage,images,options=options)),
-        recover=lambda attempt:recover_response(schema,attempt,stage))
+        recover=lambda attempt:recover_response(schema,attempt,stage,config=config))
 
 
-def recover_response(schema,attempt,stage):
+def recover_response(schema,attempt,stage,*,config=None):
     """Recover a durably received response after a crash before checkpoint commit."""
     response=attempt/'raw-response.json'
     if not response.exists():
         response=attempt/'response-body.txt'
-    if not response.exists():return None
+    config=status() if config is None else config
+    if not response.exists():
+        result=attempt/f'{stage}.response.txt'
+        metadata=attempt/'usage.json'
+        if config['provider']!='codex' or not result.is_file() or not metadata.is_file():
+            return None
+        # The live Codex path writes usage metadata only after the
+        # subprocess succeeds and its tool-use checks complete.
+        raw=result.read_text()
+        if not raw.strip():
+            return None
+        value=parse_json(raw) if schema else raw
+        value,repairs=normalize_empty_presentation(value,schema)
+        if schema:validate_schema(value,schema)
+        return value,{'provider':'codex','model':config['model'],'seconds':0,
+                      'usage':json.loads(metadata.read_text()),'cost':None,
+                      'recovered_response':True,'local_format_repairs':repairs}
     obj=json.loads(response.read_text())
     choices=obj.get('choices') if isinstance(obj,dict) else None
     if not choices:return None
@@ -134,7 +154,6 @@ def recover_response(schema,attempt,stage):
     if schema:validate_schema(value,schema)
     if not (attempt/'usage.json').exists():
         write_json(attempt/'usage.json',obj.get('usage'))
-    config=status()
     return value,{'provider':config['provider'],'model':config['model'],'seconds':0,
         'usage':obj.get('usage'),'cost':None,'recovered_response':True,'local_format_repairs':repairs}
 
