@@ -14,3 +14,4 @@ dependencies = []
 
 [project.optional-dependencies]
 pdf = ["reportlab>=4.0"]
+wechat = ["Pillow>=10.0"]
