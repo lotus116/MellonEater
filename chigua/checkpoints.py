@@ -120,7 +120,16 @@ def _call_locked(prompt,schema,folder,stage,images,config,media,execute,recover=
         if (last.get('status')=='running' or last.get('uncertain')) and not policy.get('retry_uncertain'):
             raise CallFailure('上次请求中断，当前阶段是否已计费未知。确认后可仅重试这一步。',kind='interrupted',uncertain=True)
         if 'stage_options' in config and last.get('kind') in {'invalid_output','output_length'}:
-            raise CallFailure(last.get('message','已读取该步骤保存的失败记录。'),kind=last['kind'])
+            exc = CallFailure(last.get('message','已读取该步骤保存的失败记录。'),kind=last['kind'])
+            if exc.kind=='output_length':
+                try:
+                    reply=json.loads((attempts[-1].parent/'raw-response.json').read_text())
+                    choice=reply['choices'][0]
+                    if choice['finish_reason']=='length':
+                        exc.partial_output=choice['message']['content']
+                except (OSError,ValueError,KeyError,TypeError,IndexError):
+                    pass
+            raise exc
         if last.get('kind')=='local_error':
             raise CallFailure('上次调用出现本地错误；未重复发送请求。请检查已保存的响应。',kind='local_error')
     if policy.get('local_only'):

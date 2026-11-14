@@ -10,10 +10,12 @@ from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, ASSESSMENT_READER_SCHEMA, T
 from .checkpoints import CallFailure,digest
 from .editor import normalize_presentations
 
-VERSION='compact-v16'
+VERSION='compact-v17'
+RESILIENT_PREVIOUS_VERSION='compact-v16'
+RESILIENT_VERSIONS={VERSION,RESILIENT_PREVIOUS_VERSION}
 SOURCE_IDS_VERSION='compact-v15'
 EVIDENCE_FIRST_PREVIOUS_VERSION='compact-v14'
-EVIDENCE_FIRST_VERSIONS={VERSION,SOURCE_IDS_VERSION,EVIDENCE_FIRST_PREVIOUS_VERSION}
+EVIDENCE_FIRST_VERSIONS=RESILIENT_VERSIONS | {SOURCE_IDS_VERSION,EVIDENCE_FIRST_PREVIOUS_VERSION}
 CROSSCHECK_VERSION='compact-v13'
 ACTION_PREVIOUS_VERSION='compact-v12'
 ANCHORED_PREVIOUS_VERSION='compact-v11'
@@ -826,8 +828,16 @@ def execute_evidence_first(case, folder, pack, ids, trace, checked_call, version
             raise ValueError('没有任何事件能定位到输入原文。')
         return value
 
-    binding = checked_call('bind_sources',evidence_first.RULES+'\n材料：'+dump(pack),
-                           evidence_first.LEDGER_SCHEMA,bind,tokens=3400)
+    task = evidence_first.RULES
+    binding_schema = evidence_first.LEDGER_SCHEMA
+    if version == VERSION:
+        task += ('\n输出紧凑 JSON。一般最多八个事件、三个争议，每争议先列两条最直接的证据。'
+                 '逐字引文尽可能短（通常 15–60 字），每个说明只写一句。先返回角色 roles 及关键争议 disputes，再返回事件 events。')
+        fields = binding_schema['properties']
+        binding_schema = schema_obj({key:fields[key] for key in ('roles','disputes','events','limits')})
+    binding = checked_call('bind_sources',task+'\n材料：'+dump(pack),
+                           binding_schema,bind,tokens=3400,
+                           recover_prefix=version==VERSION)
     ledger = evidence_first.build(binding,pack)
     write_json(folder/'bound-evidence.json',ledger)
     # The writer sees reviewed extracts, not all the wrappers and OCR blocks.
@@ -840,7 +850,7 @@ def execute_evidence_first(case, folder, pack, ids, trace, checked_call, version
     else:
         rules += ' source_ids 和 conflict_ids 只填底稿里的 S 编号。反证没有原文编号时填空数组。'
 
-    if version == VERSION:
+    if version in RESILIENT_VERSIONS:
         # Keep the exact upstream request stable across local presentation
         # fixes; the final ledger can improve without reissuing compose.
         ledger = evidence_first.publication_ledger(copy.deepcopy(ledger),pack)
@@ -859,7 +869,7 @@ def execute_evidence_first(case, folder, pack, ids, trace, checked_call, version
         return normalized
 
     def prepare_report(value):
-        if version == VERSION:
+        if version in RESILIENT_VERSIONS:
             prose, repaired = evidence_first.parse_prose(value)
         else:
             prose, repaired = copy.deepcopy(value), False
@@ -871,7 +881,7 @@ def execute_evidence_first(case, folder, pack, ids, trace, checked_call, version
 
     task = rules+'\n核对底稿：'+dump(context)
     prose_schema = evidence_first.PROSE
-    if version == VERSION:
+    if version in RESILIENT_VERSIONS:
         draft = assemble(evidence_first.ledger_prose(ledger))
         write_json(folder/'review-draft.json',draft)
         task += '\n仅输出一个 JSON 对象，结构如下：'+dump(prose_schema)
@@ -910,7 +920,7 @@ def execute(case,folder,progress=lambda stage:None,*,version=VERSION):
         trace.append({'stage':stage,**stats});write_json(folder/'trace.json',trace)
         write_json(folder/(stage+'.output.json'),value)
         return value
-    def checked_call(stage,task,schema,check,*,images=(),thinking='disabled',tokens=6000):
+    def checked_call(stage,task,schema,check,*,images=(),thinking='disabled',tokens=6000,recover_prefix=False):
         """One targeted correction for a returned but unusable stage."""
         try:
             value=call(stage,task,schema,images=images,thinking=thinking,tokens=tokens)
@@ -918,6 +928,18 @@ def execute(case,folder,progress=lambda stage:None,*,version=VERSION):
         except CallFailure as exc:
             if exc.kind not in {'invalid_output','output_length'}:
                 raise
+            if recover_prefix and exc.kind=='output_length':
+                raw = getattr(exc,'partial_output',None)
+                if raw:
+                    recovered = evidence_first.recover_binding_prefix(raw)
+                    if recovered:
+                        try:
+                            material = check(recovered)
+                        except ValueError:
+                            pass
+                        else:
+                            write_json(folder/(stage+'.recovered.json'),recovered)
+                            return material
             reason=str(exc)
         except (ValueError,KeyError,TypeError,IndexError) as exc:
             reason=str(exc)

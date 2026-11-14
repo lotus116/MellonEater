@@ -388,6 +388,61 @@ def parse_prose(text):
     return normalized, normalized != value
 
 
+def recover_binding_prefix(text):
+    """Read complete top-level evidence records from a truncated JSON reply."""
+    import json
+
+    decoder = json.JSONDecoder()
+    if not isinstance(text,str):
+        return None
+    text = text.lstrip()
+    if text.startswith('```'):
+        text = text.partition('\n')[2].lstrip()
+    if not text.startswith('{'):
+        return None
+    result = {key:[] for key in LEDGER_SCHEMA['properties']}
+    index = 1
+    seen = set()
+
+    def whitespace(start):
+        return start + len(text[start:]) - len(text[start:].lstrip())
+
+    while index < len(text):
+        index = whitespace(index)
+        try:
+            key, index = decoder.raw_decode(text,index)
+            index = whitespace(index)
+            if not isinstance(key,str) or key not in result or key in seen or text[index:index+1]!=':':
+                break
+            seen.add(key)
+            index = whitespace(index+1)
+            if text[index:index+1]!='[':
+                break
+            index = whitespace(index+1)
+            spec = LEDGER_SCHEMA['properties'][key]['items']
+            while text[index:index+1]!=']':
+                value, index = decoder.raw_decode(text,index)
+                validate_schema(value,spec)
+                result[key].append(value)
+                index = whitespace(index)
+                if text[index:index+1]!=',':
+                    break
+                index = whitespace(index+1)
+            if text[index:index+1]!=']':
+                break
+            index = whitespace(index+1)
+            if text[index:index+1]!=',':
+                break
+            index += 1
+        except (ValueError,TypeError):
+            break
+    # Useful partial results need both attribution and competing accounts.
+    if not result['roles'] or not result['events'] or not result['disputes']:
+        return None
+    result['limits'].append('证据提取达到输出上限，已保留完整返回且可逐字核对的条目；可能还有遗漏。')
+    return result
+
+
 def reconcile_prose(draft, ledger):
     """Resolve contrast links against the ledger and isolate unsupported prose."""
     approved = {sid for event in ledger['events'] for sid in event['source_ids']}

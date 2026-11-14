@@ -97,6 +97,25 @@ class WorkflowReleaseTests(unittest.TestCase):
         self.assertEqual(recovered['usage'],before)
         self.assertEqual(recovered['result']['report'],done['result']['report'])
 
+    def test_truncated_binding_uses_complete_records_before_paid_rewrite(self):
+        partial = json.dumps(self.binding,ensure_ascii=False).rsplit('"limits"',1)[0]+'"limits":["未完'
+        with patch('urllib.request.urlopen',side_effect=[
+            self.response(partial,finish='length'),self.response(prose('S001')),
+        ]) as requests:
+            done = pipeline.start(self.case,background=False)
+        self.assertEqual(done['status'],'completed',done.get('error'))
+        self.assertEqual(requests.call_count,2)
+        self.assertIn('四天',self.html(done))
+        run = self.root/'runs'/done['id']
+        self.assertTrue((run/'editorial/bind_sources.recovered.json').is_file())
+        (run/'result.json').unlink()
+        pipeline.JOBS.clear()
+        with patch('urllib.request.urlopen',side_effect=AssertionError('unexpected network')) as requests:
+            resumed = pipeline.resume(done['id'],background=False,local_only=True)
+        self.assertEqual(resumed['status'],'completed',resumed.get('error'))
+        self.assertEqual(resumed['usage'],done['usage'])
+        requests.assert_not_called()
+
     def test_budget_keeps_evidence_visible_and_unbilled(self):
         with patch('urllib.request.urlopen',side_effect=[self.response(self.binding,usage=1000)]) as requests:
             done = pipeline.start(self.case,background=False,max_total_tokens=1000)

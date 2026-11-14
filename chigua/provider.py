@@ -255,7 +255,9 @@ def _generate_once(prompt, schema, run_dir: Path, stage, images=(), *, options=N
             details=(obj.get('usage') or {}).get('completion_tokens_details') or {}
             note=(' 本次尚未返回正文，思考已用 '+str(details['reasoning_tokens'])+' token；可在设置中关闭深度思考后明确新建分析。'
                   if not choice.get('message',{}).get('content') and details.get('reasoning_tokens') else '')
-            raise CallFailure('模型输出达到长度上限，原始响应与用量已保存。请调整输出要求，避免原样重试再次截断。'+note,kind='output_length')
+            exc = CallFailure('模型输出达到长度上限，原始响应与用量已保存。请调整输出要求，避免原样重试再次截断。'+note,kind='output_length')
+            exc.partial_output = choice.get('message',{}).get('content')
+            raise exc
         raw = (choice.get('message') or {}).get('content')
         if not raw or not raw.strip():
             raise CallFailure('模型返回了空内容，已保存响应。',kind='invalid_output')
