@@ -52,6 +52,16 @@ class ReaderTests(unittest.TestCase):
     def test_story_order_basis_is_explicit(self):
         r=reader();r['story']=story();r['story']['arc'][0]['order_basis']='模型猜测为确定事实'
         with self.assertRaisesRegex(ValueError,'选项'):validate_reader(r,self.messages)
+    def test_timeline_exposes_date_basis_and_keeps_evidence_links(self):
+        r = reader()
+        r['story'] = story()
+        r['story']['arc'][0].update(phase='前情',event_time='比赛期间')
+        validate_reader(r,self.messages)
+        html = report.reader_html({'messages':self.messages},{
+            'report':{'reader':r},'created_at':'2026-11-14T00:00:00Z'})
+        self.assertIn('data-phase="前情"',html)
+        self.assertIn('前情 · 比赛期间 · 当事人回述',html)
+        self.assertIn('href="#source-M001"',html)
     def test_standalone_html_embeds_image_and_escapes(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);(root/'uploads').mkdir();(root/'uploads'/'sample.png').write_bytes(b'png-content')

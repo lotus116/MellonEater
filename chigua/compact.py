@@ -5,15 +5,17 @@ import json
 import re
 from pathlib import Path
 from . import provider
-from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, ASSESSMENT_READER_SCHEMA, schema_obj, validate_schema, validate_report, write_json, now
+from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, ASSESSMENT_READER_SCHEMA, TIMED_READER_SCHEMA, schema_obj, validate_schema, validate_report, write_json, now
 from .checkpoints import CallFailure,digest
 from .editor import normalize_presentations
 
-VERSION='compact-v8'
+VERSION='compact-v9'
+COMPARATIVE_PREVIOUS_VERSION='compact-v8'
 SINGLE_REVISION_PREVIOUS_VERSION='compact-v7'
 NUMBERED_PREVIOUS_VERSION='compact-v6'
 PREVIOUS_VERSION='compact-v5'
-SINGLE_REVISION_VERSIONS={VERSION,SINGLE_REVISION_PREVIOUS_VERSION}
+COMPARATIVE_VERSIONS={VERSION,COMPARATIVE_PREVIOUS_VERSION}
+SINGLE_REVISION_VERSIONS=COMPARATIVE_VERSIONS | {SINGLE_REVISION_PREVIOUS_VERSION}
 SUPPORTED_VERSIONS=SINGLE_REVISION_VERSIONS | {NUMBERED_PREVIOUS_VERSION,PREVIOUS_VERSION}
 RULES=(ROOT/'skills/chigua-analysis/references/compact-workflow.md').read_text()
 CONTEXT_RULE = (
@@ -42,6 +44,20 @@ READING_CHOICE_SCHEMA = schema_obj({
     'notes': STR,
 })
 COMPARATIVE_OUTPUT = schema_obj({'reading_choice': READING_CHOICE_SCHEMA, **REPORT_OUTPUT['properties']})
+TIMED_OUTPUT = schema_obj({**COMPARATIVE_OUTPUT['properties'], 'reader':TIMED_READER_SCHEMA})
+CHRONOLOGY_RULE = (
+    '先从所有材料找冲突发生前的具体事件，尤其检查后来转发的旧截图和当事人回述。'
+    '有相关前情就写进 story.arc 的前情节点：当时发生什么、与后来的哪个反应有关，引用实际说法。'
+    '旧事可能只是后来拿来佐证的背景；只有当事人明确联系它与当前反应或有其他证据支持时，才说它促成升级。'
+    '其余节点按导火索、升级、后续呈现，普通经过用“经过”。不凭空补任何阶段。'
+    'event_time 写证据支持的事件时间或阶段（如“比赛准备期间”），未知留空。'
+    '后来提起或转发的时间并不等于事件时间；截图设备时间也不是。'
+    '用 order_basis 区分时间戳、相对顺序、当事人回述和先后不明；更换群聊、发言人或引用对象时分别交代。'
+    '用一句话在 changed 说清该事件怎样改变了关系或局势，或者明确关系只能推测。'
+    '标题和现状不能沿用某一方有争议的具体数字或把单方结清声明写成全员到账。'
+    '只挑 3 至 6 个真正改变局势或解释反应的节点；材料不足时可更少。'
+    '压缩后台 events、timeline、claims 的重复内容，把篇幅留给主线和具体行为判断。'
+)
 POLICY={'writer_tokens':6000,'audit_tokens':4000,'patch_tokens':4000,'image_tokens':6000,
         'audit_thinking':'disabled','max_revisions':2,'image_batch':4}
 VISION_SCHEMA=schema_obj({'observations':{'type':'array','items':schema_obj({
@@ -118,7 +134,7 @@ def quoted_fields(value, path, quote):
     """Search prose fields, leaving citation lists and internal IDs untouched."""
     if isinstance(value, dict):
         for field, child in value.items():
-            if field in {'id', 'event_id', 'kind', 'status', 'order_basis'} or field.endswith(('_id', '_ids')):
+            if field in {'id', 'event_id', 'kind', 'status', 'order_basis', 'phase'} or field.endswith(('_id', '_ids')):
                 continue
             yield from quoted_fields(child, f'{path}/{field}', quote)
     elif isinstance(value, list):
@@ -334,10 +350,14 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
                 '\n材料：'+dump(pack)+'\n字段：'+dump(content))
         if single_revision:
             task += '\n'+CONTEXT_RULE+'如果正文漏掉决定性前因，可在最相关的导语、转折或判断字段提出有原文依据的局部补充。'
-        if version == VERSION and revision == 0:
+        if version in COMPARATIVE_VERSIONS and revision == 0:
             task += ('\n成稿比较过这些读法，仍须回到原材料核对：'+dump(candidate['reading_choice'])+
                      '\n检查主线能否解释关键反应和转折；证据不对称时应说明分量。'
                      '仅在遗漏或误读会改变读者理解时，提出带依据的局部修改。')
+        if version == VERSION:
+            task += ('\n'+CHRONOLOGY_RULE+
+                     '优先核对标题、导语、现状和主线的事件时间、发言人、群聊场景、争议数字和结清范围。'
+                     '相关前情若已被读法比较识别但正文漏掉，可补入现有前情节点或导语。')
         if retry_notes:
             task += '\n上轮核对未完成。重新检查这些字段，问题只写最必要的几条；校验反馈：'+dump(retry_notes)
         if pending:
@@ -380,7 +400,8 @@ def review_numbered(case, folder, pack, ids, candidate, original, trace, call, v
             container = locate(edited, parent) if parent else edited
             container[int(key) if isinstance(container,list) else key] = value
             try:
-                next_candidate, next_report, _ = mechanical(edited,case,ids,compare=version==VERSION)
+                next_candidate, next_report, _ = mechanical(
+                    edited,case,ids,compare=version in COMPARATIVE_VERSIONS,timed=version==VERSION)
             except (ValueError, TypeError, KeyError) as exc:
                 rejected.append(str(exc))
                 pending.append(item)
@@ -439,8 +460,8 @@ def apply_patch(candidate,patch,issues):
     return result
 
 
-def mechanical(candidate,case,ids,*,compare=False):
-    validate_schema(candidate, COMPARATIVE_OUTPUT if compare else REPORT_OUTPUT)
+def mechanical(candidate,case,ids,*,compare=False,timed=False):
+    validate_schema(candidate, TIMED_OUTPUT if timed else COMPARATIVE_OUTPUT if compare else REPORT_OUTPUT)
     original=map_refs(candidate,{v:k for k,v in ids.items()})
     if compare:
         choice = original.pop('reading_choice')
@@ -452,6 +473,10 @@ def mechanical(candidate,case,ids,*,compare=False):
         if any(not item['id'].strip() or not item['explanation'].strip() or not item['limits'].strip()
                or not item['source_ids'] or not set(item['source_ids']) <= ids.keys() for item in options):
             raise ValueError('每种读法需有解释、局限及可回查的材料。')
+    if timed:
+        # Stable partition: background belongs ahead of the immediate sequence;
+        # preserve the chosen relative order within each group.
+        original['reader']['story']['arc'].sort(key=lambda step: step['phase'] != '前情')
     original['reader'],fixes=normalize_presentations(original['reader'],case['messages'])
     validate_report(original,case['messages'])
     # Byte/paragraph page preferences do not trigger paid prose rewriting.
@@ -549,13 +574,16 @@ def execute(case,folder,progress=lambda stage:None,*,version=VERSION):
     pack['image_observations']=observations
     write_json(folder/'evidence-pack.json',pack)
     context=RULES+'\n材料（短编号与原记录一一对应，时间字段为消息时间）：'+dump(pack)
-    if version == VERSION:
+    if version in COMPARATIVE_VERSIONS:
         context = READING_RULES + '\n' + CONTEXT_RULE + '\n' + context
+    if version == VERSION:
+        context = CHRONOLOGY_RULE + '\n' + context
     candidate,original,fixes=checked_call(
         'compose',
         context+'\n生成全新的事件分析和完整阅读稿。除reader外的字段是简短后台参考，reader是读者正文。不要复用旧报告。最多6个核心判断；篇幅按材料缩小，可选引文、图片字段无内容时填空字符串。现状集中写最新状态和关键悬念，先前的误读与更正放在经过里。',
-        COMPARATIVE_OUTPUT if version == VERSION else REPORT_OUTPUT,
-        lambda value:mechanical(value,case,ids,compare=version==VERSION),tokens=POLICY['writer_tokens'])
+        TIMED_OUTPUT if version == VERSION else COMPARATIVE_OUTPUT if version in COMPARATIVE_VERSIONS else REPORT_OUTPUT,
+        lambda value:mechanical(value,case,ids,compare=version in COMPARATIVE_VERSIONS,timed=version==VERSION),
+        tokens=POLICY['writer_tokens'])
     if version != PREVIOUS_VERSION:
         return review_numbered(case, folder, pack, ids, candidate, original, trace, call, version)
     previous=[];seen=set();audit_repairs=0

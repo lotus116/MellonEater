@@ -177,6 +177,16 @@ ASSESSMENT_READER_SCHEMA = schema_obj({
     **READER_SCHEMA['properties'],
     'assessment': {'type': 'array', 'items': ASSESSMENT_ITEM},
 })
+EVENT_PHASES = ['前情', '导火索', '升级', '后续', '经过']
+TIMED_ARC_STEP = schema_obj({
+    **STORY_SCHEMA['properties']['arc']['items']['properties'],
+    'phase': {'type': 'string', 'enum': EVENT_PHASES},
+    'event_time': STR,
+})
+TIMED_READER_SCHEMA = schema_obj({
+    **ASSESSMENT_READER_SCHEMA['properties'],
+    'story': schema_obj({**STORY_SCHEMA['properties'], 'arc': {'type': 'array', 'items': TIMED_ARC_STEP}}),
+})
 READER_RULES = (ROOT/'skills/chigua-analysis/references/report-editing.md').read_text(encoding='utf-8')
 
 
@@ -273,6 +283,8 @@ def validate_reader(reader,messages):
     if 'story' in reader:
         story=reader['story']
         if not story['central_question'].strip() or not story['arc']:raise ValueError('阅读版缺少事件主线。')
+        if any('phase' in item or 'event_time' in item for item in story['arc']):
+            validate_schema(story['arc'], TIMED_READER_SCHEMA['properties']['story']['properties']['arc'])
         for item in story['arc']+story['threads']:
             if not item['source_ids']:raise ValueError('主线或支线缺少来源。')
             refs.extend(item['source_ids'])

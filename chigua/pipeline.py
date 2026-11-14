@@ -39,9 +39,11 @@ def signature(case,method,workflow=None):
     if workflow in compact.SUPPORTED_VERSIONS:
         components = {'case':case,'method':method,'media':media_hashes(images,DATA),
                       'config':provider.config_identity(),'workflow':workflow,'rules':compact.RULES,'policy':compact.POLICY}
-        if workflow == compact.VERSION:
+        if workflow in compact.COMPARATIVE_VERSIONS:
             components['reading_rules'] = compact.READING_RULES
             components['context_rule'] = compact.CONTEXT_RULE
+        if workflow == compact.VERSION:
+            components['chronology_rule'] = compact.CHRONOLOGY_RULE
         return digest(components)
     return digest({'case':case,'method':method,'media':media_hashes(images,DATA),
         'config':provider.config_identity(),'workflow':WORKFLOW_VERSION,'editor':EDITOR_VERSION,

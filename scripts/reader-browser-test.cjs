@@ -22,6 +22,14 @@ const fs=require('node:fs');
  await page.goto('http://127.0.0.1:8765/report/'+run+'/html');await page.locator('h1').waitFor();
  if(await page.evaluate(()=>[...document.querySelectorAll('a[href^="#"]')].some(a=>!document.getElementById(a.hash.slice(1)))))throw Error('missing internal target');
  if(!await page.locator('.turn:not([open]) .turn-brief').first().isVisible())throw Error('turn summary must be readable without opening');
+ const phases=page.locator('.timeline-controls button');
+ if(await phases.count()>1){
+  await phases.nth(1).click();
+  if(!await page.locator('.event-timeline > li[hidden]').count())throw Error('phase filter did not narrow timeline');
+  if(await phases.nth(1).getAttribute('aria-pressed')!=='true')throw Error('phase filter state missing');
+  await phases.first().click();
+  if(await page.locator('.event-timeline > li[hidden]').count())throw Error('all events did not restore');
+ }
  if(hasAssessment){
   const item=page.locator('.assessment-item').first();
   if(!await item.locator('.behavior-judgment').isVisible())throw Error('behavior judgment should be readable at a glance');

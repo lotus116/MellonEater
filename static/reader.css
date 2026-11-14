@@ -26,6 +26,13 @@ main { max-width: 860px; padding: 42px 60px; }
 .assessment-item { padding: 8px 0 16px; border-bottom: 1px solid var(--line); }
 .draft-notice { margin-top: 16px; padding: 12px 16px; background: #fff2da; border-left: 4px solid #a4651c; }
 .draft-notice p { margin: 4px 0 0; }
+.timeline-controls { display:flex; gap:8px; flex-wrap:wrap; margin: 0 0 18px; }
+.timeline-controls button { font-size:14px; }
+.timeline-controls button[aria-pressed="true"] { background:var(--accent); color:#fff; }
+.event-timeline { padding:0; margin:0; list-style:none; }
+.event-timeline > li { padding:0; margin:0; }
+.event-meta { display:block; color:var(--muted); font-size:13px; font-weight:normal; }
+.event-timeline .turn > summary { scroll-margin-top:16px; }
 .assessment-item h3 { margin: 8px 0; }
 .behavior-judgment { margin: 8px 0; }
 .behavior-judgment strong, .assessment-basis p strong { color: var(--green); }
@@ -41,6 +48,7 @@ main { max-width: 860px; padding: 42px 60px; }
 }
 @page { size: A4; margin: 15mm 17mm; }
 @media print {
+  .timeline-controls { display:none !important; }
   body { background: white; font-size: 11pt; line-height: 1.65; }
   main { margin: 0; padding: 0; border: 0; max-width: none; }
   .masthead button, .section-heading button, .reader-nav, .source-controls, .jump-top, dialog { display: none !important; }

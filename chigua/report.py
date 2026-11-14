@@ -176,11 +176,18 @@ def reader_html(case,run):
       '<a href="#details">详细经过</a><a href="#originals">核对原文</a></nav>']
     if r.get('story'):
         story=r['story']
-        parts.extend(['<section id="turns"><h2>事情怎么发展</h2>',p(story['central_question'])])
+        parts.extend(['<section id="turns"><h2>事情怎么发展</h2>',p(story['central_question']),
+                      '<div class="timeline-controls" hidden></div><ol class="event-timeline" aria-label="事件顺序">'])
         for i,step in enumerate(story['arc'],1):
-            parts.extend(['<details class="turn"><summary><span class="turn-number">'+str(i)+'</span><span><strong>'+escape(step['stage'])+'</strong><span class="turn-brief">'+escape(step['happened'])+'</span></span></summary>',
-                          '<div class="turn-detail">'+p(step['changed'])+'<small>'+escape(step['order_basis'])+'</small>'+refs(step['source_ids'])+'</div></details>'])
-        parts.append('<details class="scope"><summary>这些时间如何确定</summary>'+p(story['timeline_note'])+'</details></section>')
+            phase = step.get('phase', '')
+            when = step.get('event_time')
+            metadata = [value for value in (phase, when, step['order_basis']) if value]
+            parts.extend(['<li data-phase="'+escape(phase)+'"><details class="turn" id="event-'+str(i)+'">',
+                          '<summary><span class="turn-number" aria-hidden="true">'+str(i)+'</span><span>',
+                          '<span class="event-meta">'+escape(' · '.join(metadata))+'</span>',
+                          '<strong>'+escape(step['stage'])+'</strong><span class="turn-brief">'+escape(step['happened'])+'</span></span></summary>',
+                          '<div class="turn-detail">'+p(step['changed'])+refs(step['source_ids'])+'</div></details></li>'])
+        parts.append('</ol><details class="scope"><summary>这些时间如何确定</summary>'+p(story['timeline_note'])+'</details></section>')
     if assessment:
         parts.append('<section id="assessment"><h2>怎么看双方的做法</h2>')
         for item in assessment:

@@ -43,7 +43,7 @@ def api(path,body=None):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('sample',choices=['chronology','parallel','image','conduct','stress','readings'])
+    parser.add_argument('sample',choices=['chronology','parallel','image','conduct','stress','readings','prehistory'])
     parser.add_argument('--inject-local-failure',action='store_true')
     args=parser.parse_args()
     records=ROOT/'data/private/compact-eval';records.mkdir(parents=True,exist_ok=True)

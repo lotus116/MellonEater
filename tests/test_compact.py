@@ -11,6 +11,8 @@ def composed(*, compare=False):
     reader = {**candidate(), 'assessment': []}
     draft = compact.map_refs({**valid_report(),'reader':reader},{'M0001':'S001','M1':'S001'})
     if compare:
+        for step in draft['reader']['story']['arc']:
+            step.update(phase='经过',event_time='')
         draft['reading_choice'] = {
             'options':[{'id':'A','explanation':'付款进度尚未确认。','limits':'只有本人说法。','source_ids':['S001']}],
             'selected_id':'A','notes':'现有材料只覆盖付款说法。',
@@ -171,7 +173,9 @@ class CompactTests(unittest.TestCase):
         with patch.object(provider,'generate',side_effect=[(draft,{}),({'issues':[]},{})]) as calls:
             result = compact.execute(self.case,self.folder)
         self.assertNotIn('reading_choice',result['report'])
+        self.assertEqual(result['report']['reader']['story']['arc'][0]['phase'],'经过')
         self.assertIn('现有材料只覆盖付款说法。',calls.call_args.args[0])
+        self.assertIn('后来提起或转发的时间并不等于事件时间',calls.call_args.args[0])
         self.assertNotIn('/reading_choice',json.dumps(compact.numbered_fields(draft)))
         draft['reading_choice']['options'][0]['source_ids'] = ['S404']
         with self.assertRaisesRegex(ValueError,'可回查'):
