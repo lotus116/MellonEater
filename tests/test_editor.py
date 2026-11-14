@@ -58,23 +58,28 @@ class EditorTests(unittest.TestCase):
         self.assertEqual(result['quality']['revisions'],1)
         self.assertNotIn('editor_review_0',[c.args[3] for c in gen.call_args_list])
         self.assertIn('MISSING',gen.call_args_list[2].args[0])
-    def test_overflow_triggers_repair_even_when_model_passes(self):
-        self.layout_mock.side_effect=[{'status':'checked','pages':3,'overview_pages':2},
-                                    {'status':'checked','pages':2,'overview_pages':1}]
-        result,gen=self.run_edit(iter([plan(),candidate(),review(),candidate(),review()]))
-        self.assertEqual(result['quality']['revisions'],1)
-        self.assertIn('溢出',gen.call_args_list[3].args[0])
+    def test_pure_layout_failure_never_pays_for_prose_rewrite(self):
+        self.layout_mock.return_value={'status':'checked','pages':3,'overview_pages':2}
+        with self.assertRaisesRegex(RuntimeError,'排版需要调整'):
+            self.run_edit(iter([plan(),candidate(),review()]))
+        trace=json.loads((self.folder/'trace.json').read_text())
+        self.assertEqual([t['stage'] for t in trace],['editor_plan','editor_draft','editor_review_0'])
+        self.assertTrue((self.folder/'layout-pending.json').exists())
+        self.assertFalse((self.folder/'accepted.json').exists())
     def test_exhausted_rewrites_do_not_publish(self):
         with self.assertRaisesRegex(ValueError,'两轮返修'):
             self.run_edit(iter([plan(),candidate(),review(False),candidate(),review(False),candidate(),review(False)]))
         self.assertFalse((self.folder/'accepted.json').exists());self.assertTrue((self.folder/'rejected.json').exists())
         trace=json.loads((self.folder/'trace.json').read_text());self.assertEqual(len(trace),7)
-    def test_tiny_trailing_page_triggers_revision(self):
-        self.layout_mock.side_effect=[{'status':'checked','pages':3,'overview_pages':1,'last_page_fill':.1},
-                                    {'status':'checked','pages':2,'overview_pages':1,'last_page_fill':.9}]
-        result,gen=self.run_edit(iter([plan(),candidate(),review(),candidate(),review()]))
+    def test_small_trailing_page_does_not_spend_tokens_rewriting_approved_text(self):
+        self.layout_mock.return_value={'status':'checked','pages':3,'overview_pages':1,'last_page_fill':.1}
+        result,gen=self.run_edit(iter([plan(),candidate(),review()]))
+        self.assertEqual(result['quality']['revisions'],0);self.assertEqual(gen.call_count,3)
+    def test_length_error_repaired_before_paid_semantic_review(self):
+        bad=candidate();bad['lead']='长'*170
+        result,gen=self.run_edit(iter([plan(),bad,candidate(),review()]))
         self.assertEqual(result['quality']['revisions'],1)
-        self.assertIn('零碎尾页',gen.call_args_list[3].args[0])
+        self.assertNotIn('editor_review_0',[c.args[3] for c in gen.call_args_list])
     def test_pass_label_cannot_override_issues(self):
         r=review(False);r['decision']='pass';r['checks']['chronology']='pass'
         self.assertFalse(editor.validate_review(r,self.case['messages']))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import argparse
+import hashlib
 import base64
 import json
 import mimetypes
@@ -68,7 +69,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Length',str(len(body)))
         self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('Cache-Control','no-store')
-        self.send_header('Content-Security-Policy',"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+        script_hash=base64.b64encode(hashlib.sha256((STATIC/'reader.js').read_bytes()).digest()).decode()
+        self.send_header('Content-Security-Policy',f"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-{script_hash}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
         if filename:
             self.send_header('Content-Disposition',f'attachment; filename="{filename}"')
         self.end_headers()
@@ -102,15 +104,9 @@ class Handler(BaseHTTPRequestHandler):
                                   'start':scope.get('start','')[:10],'end':scope.get('end','')[:10]})
             if len(bits)==3 and bits[:2]==['api','cases']:
                 c=pipeline.load_case(safe_id(bits[2]))
-                return self.send({'case':c,'runs':pipeline.list_runs(c['id'])})
+                return self.send({'case':c,'runs':pipeline.list_runs(c['id']),'jobs':pipeline.list_jobs(c['id'])})
             if len(bits)==3 and bits[:2]==['api','jobs']:
-                jid=safe_id(bits[2])
-                if jid in pipeline.JOBS:
-                    return self.send(pipeline.JOBS[jid])
-                try:
-                    return self.send({'status':'completed','result':get_run(jid)})
-                except FileNotFoundError:
-                    raise ValueError('任务已停止或不存在，请重新开始分析。')
+                return self.send(pipeline.get_job(safe_id(bits[2])))
             if len(bits)==3 and bits[:2]==['api','prompts']:
                 c=pipeline.load_case(safe_id(bits[2]))
                 return self.send(build_prompt(c,'B1')+'\nJSON 格式：\n'+json.dumps(REPORT_SCHEMA,ensure_ascii=False,indent=2),ctype='text/plain; charset=utf-8',filename='analysis-request.txt')
@@ -249,7 +245,9 @@ class Handler(BaseHTTPRequestHandler):
                 case=pipeline.load_case(safe_id(obj['case_id']))
                 if obj.get('identity'):
                     case['identity']=str(obj['identity'])[:200]
-                return self.send(pipeline.start(case,obj.get('method','B2')),202)
+                return self.send(pipeline.start(case,obj.get('method','B1'),force=obj.get('force') is True,max_requests=obj.get('max_requests',20)),202)
+            if path=='/api/resume':
+                return self.send(pipeline.resume(safe_id(obj['job_id']),allow_uncertain=obj.get('allow_uncertain') is True,max_requests=obj.get('max_requests')),202)
             if path=='/api/import-result':
                 case=pipeline.load_case(safe_id(obj['case_id']))
                 return self.send(pipeline.import_result(case,obj['report'],'用户导入分析结果'))

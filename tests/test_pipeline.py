@@ -47,7 +47,7 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue((self.root/'runs/test/analysis_report.json').exists())
         self.assertFalse((self.root/'runs/test/result.json').exists())
     def test_active_job_prevents_concurrent_start(self):
-        with patch.object(pipeline.provider,'status',return_value={'available':True}):
+        with patch.object(pipeline.provider,'status',return_value={'available':True,'provider':'mock','model':'mock'}):
             with self.assertRaisesRegex(ValueError,'已有分析'):pipeline.start(self.case,'B1')
 
 

@@ -14,7 +14,7 @@ const fs=require('node:fs');
     if(await page.locator('.arc-step').count()!==run.report.reader.story.arc.length)throw Error('Story arc mismatch');
     await page.locator('.arc-step [data-ref]').first().click();await page.locator('.evidence-card pre').waitFor();
     await page.getByRole('button',{name:'运行记录',exact:true}).click();
-    if(!(await page.locator('.run-item').first().innerText()).includes('自动编辑 '+run.editorial_trace.length+' 次'))throw Error('Editorial call accounting missing');
+    if(!(await page.locator('.run-item').first().innerText()).includes('自动编辑 '+run.editorial_trace.length+' 步'))throw Error('Editorial call accounting missing');
     const pdf=await page.request.get('/report/'+rid+'/pdf');if(!pdf.ok()||(await pdf.body()).subarray(0,4).toString()!=='%PDF')throw Error('PDF export failed');
     const html=await page.request.get('/report/'+rid+'/html');if(!html.ok()||!(await html.text()).includes(run.report.reader.title))throw Error('HTML export failed');
     await page.getByRole('button',{name:'事件报告',exact:true}).click();

@@ -45,7 +45,7 @@ class ReaderTests(unittest.TestCase):
             with patch.object(report,'DATA',root):
                 html=report.report_html({'messages':m},{'report':{'reader':r},'created_at':'2026-11-14T00:00:00+08:00'})
             self.assertIn('data:image/png;base64,',html)
-            self.assertNotIn('src="/media/',html);self.assertNotIn('<script>',html)
+            self.assertNotIn('src="/media/',html);self.assertNotIn('<script>bad()</script>',html)
     def test_parent_cycles_rejected(self):
         with self.assertRaisesRegex(ValueError,'循环'):
             normalize_messages([{'id':'A','text':'a','parent_id':'B'},{'id':'B','text':'b','parent_id':'A'}])
@@ -108,6 +108,20 @@ class ReaderTests(unittest.TestCase):
             pdf=PdfReader(root/'report.pdf');text=''.join(page.extract_text() for page in pdf.pages)
             self.assertIn('后补截图',text);self.assertIn('并非原 ZIP 随附',text)
             self.assertTrue(any(page.get('/Resources',{}).get('/XObject') for page in pdf.pages))
+    def test_interactive_dispute_references_include_additional_originals(self):
+        import re
+        rows=normalize_messages([{'id':'M1','speaker':'甲','text':'我付了钱'},
+            {'id':'counter','speaker':'乙','text':'新增的反证原文'}])
+        r=reader();r['chapters'][0]['quote_text']=''
+        run={'report':{'reader':r,'claims':[{'statement':'付款争议','reason':'对立说法',
+            'status':'存在反证','support_ids':['M1'],'conflict_ids':['counter']}]},'created_at':'2026-11-14T00:00:00Z'}
+        html=report.reader_html({'messages':rows},run)
+        self.assertIn('新增的反证原文',html)
+        targets=set(re.findall(r'id="([^" ]+)"',html))
+        self.assertTrue(set(re.findall(r'href="#([^" ]+)"',html))<=targets)
+        self.assertIn('class="turn',report.reader_html({'messages':rows},{**run,'report':{**run['report'],'reader':{**r,'story':story()}}}))
+        self.assertIn('class="original"',html)
+
     def test_siblings_inherit_container_source(self):
         rows=normalize_messages([{'id':'A','source_name':'container','children':[
             {'id':'B','text':'b','source_name':'override'}, {'id':'C','text':'c'}]}])
@@ -149,7 +163,7 @@ class ReaderTests(unittest.TestCase):
             metrics=report.report_pdf(case,run,path)
             self.assertEqual(metrics['overview_pages'],1)
             self.assertEqual(metrics['pages'],len(PdfReader(path).pages))
-            r['story']['arc']=[dict(r['story']['arc'][0]) for _ in range(10)]
+            r['lead']='这是过长的首页摘要。'*200
             metrics=report.report_pdf(case,run,path)
             self.assertGreater(metrics['overview_pages'],1)
 

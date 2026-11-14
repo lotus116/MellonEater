@@ -2,9 +2,14 @@ from __future__ import annotations
 import json
 import threading
 import uuid
+import os
+import fcntl
+import copy
 from .core import DATA, REPORT_SCHEMA, DISCOVERY_SCHEMA, build_prompt, now, validate_report, write_json
 from . import provider
-from .editor import edit_report
+from .editor import edit_report, VERSION as EDITOR_VERSION
+from .core import RULES, READER_RULES
+from .checkpoints import digest, media_hashes, usage_summary, CallFailure
 
 JOBS = {}
 LOCK = threading.Lock()
@@ -20,11 +25,60 @@ def save_case(case):
     write_json(DATA / 'cases' / (case['id']+'.json'), case)
 
 
+WORKFLOW_VERSION='resumable-v1'
+
+
+def signature(case,method):
+    images=list(dict.fromkeys(m['image'] for m in case['messages'] if m.get('image')))
+    return digest({'case':case,'method':method,'media':media_hashes(images,DATA),
+        'config':provider.config_identity(),'workflow':WORKFLOW_VERSION,'editor':EDITOR_VERSION,
+        'rules':RULES,'reader_rules':READER_RULES})
+
+
+def persist(job):
+    write_json(DATA/'runs'/job['id']/'job.json',{k:v for k,v in job.items() if k!='result'})
+
+
+def get_job(jid):
+    if not jid.isalnum():raise ValueError('任务编号无效。')
+    folder=DATA/'runs'/jid
+    if jid in JOBS:job=copy.deepcopy(JOBS[jid])
+    elif (folder/'job.json').exists():
+        job=json.loads((folder/'job.json').read_text())
+        if job['status']=='running':
+            job.update(status='interrupted',error='服务曾中断。已完成步骤仍在，点击继续可从断点恢复。',uncertain=True)
+    elif (folder/'result.json').exists():
+        return {'id':jid,'status':'completed','result':json.loads((folder/'result.json').read_text())}
+    else:raise ValueError('任务不存在。')
+    if (folder/'result.json').exists():job.update(status='completed',result=json.loads((folder/'result.json').read_text()))
+    job['usage']=usage_summary(folder)
+    job['cached_steps']=sum(1 for _ in folder.rglob('completed.json'))
+    return job
+
+
+def list_jobs(cid):
+    jobs=[]
+    for p in (DATA/'runs').glob('*/job.json'):
+        j=get_job(p.parent.name)
+        if j.get('case_id')==cid:
+            j.pop('result',None);jobs.append(j)
+    return sorted(jobs,key=lambda j:j.get('created_at',''),reverse=True)
+
+
+def worker_lock():
+    root=DATA/'private';root.mkdir(parents=True,exist_ok=True,mode=0o700)
+    fd=os.open(root/'analysis.lock',os.O_CREAT|os.O_RDWR,0o600)
+    try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd);raise ValueError('已有分析正在运行，请等待完成后再开始。') from None
+    return fd
+
+
 def run_pipeline(jid, case, method):
     job = JOBS[jid]
     folder = DATA / 'runs' / jid
-    folder.mkdir(parents=True, exist_ok=True)
-    write_json(folder / 'input.json', case)
+    folder.mkdir(parents=True, exist_ok=True,mode=0o700)
+    if not (folder/'input.json').exists():write_json(folder / 'input.json', case)
     try:
         plan = [('discover', DISCOVERY_SCHEMA), ('evidence', REPORT_SCHEMA), ('assess', REPORT_SCHEMA), ('review', REPORT_SCHEMA)]
         if method in ['B0', 'B1']:
@@ -34,46 +88,87 @@ def run_pipeline(jid, case, method):
         prior, trace = None, []
         images = list(dict.fromkeys(m['image'] for m in case['messages'] if m.get('image')))
         for index, (stage, schema) in enumerate(plan):
-            job.update(stage=stage, step=index+1, total=len(plan),phase='analysis')
+            job.update(stage=stage, step=index+1, total=len(plan),phase='analysis');persist(job)
             prompt = build_prompt(case, stage, prior)
-            # Schema also goes into prompt so providers returning plain text see the contract.
-            if schema:
-                prompt += '\n输出格式：\n'+json.dumps(schema, ensure_ascii=False)
+            if schema:prompt += '\n输出格式：\n'+json.dumps(schema, ensure_ascii=False)
             prior, stats = provider.generate(prompt, schema, folder, stage, images)
             trace.append({'stage': stage, **stats})
             write_json(folder / f'{stage}.output.json', prior)
-        prior.pop('reader',None)
+            write_json(folder/'analysis_trace.json',trace)
+        prior=copy.deepcopy(prior);prior.pop('reader',None)
         checks = validate_report(prior, case['messages'])
         write_json(folder/'analysis_report.json',prior)
-        write_json(folder/'analysis_trace.json',trace)
         def editorial_progress(stage):
-            job.update(stage=stage,phase='editing',step=0,total=0)
+            job.update(stage=stage,phase='editing',step=0,total=0);persist(job)
         edition=edit_report(case,prior,folder/'editorial',editorial_progress)
         run = {'id': jid, 'case_id': case['id'], 'method': method, 'created_at': now(),
                'origin': 'live_model', 'input_hash': case['input_hash'], 'identity': case.get('identity','旁观者'),
                'report':{**prior,'reader':edition['reader']},'checks': checks,'trace': trace,
                'editorial_trace':edition['trace'],'editorial_quality':edition['quality'],
-               'editorial_workflow':edition['workflow_version'],'status': 'completed'}
+               'editorial_workflow':edition['workflow_version'],'status': 'completed','usage':usage_summary(folder)}
         write_json(folder / 'result.json', run)
-        # Case records are immutable; each run has its own provenance and output.
-        job.update(status='completed', result=run)
+        job.update(status='completed', result=run,error='',uncertain=False)
     except Exception as exc:
-        job.update(status='failed', error=str(exc))
-        write_json(folder / 'failure.json', {k:v for k,v in job.items() if k != 'result'})
+        job.update(status='failed', error=str(exc),error_kind=getattr(exc,'kind','validation'),uncertain=getattr(exc,'uncertain',False))
+        failure={k:v for k,v in job.items() if k != 'result'}
+        write_json(folder/'failures'/(uuid.uuid4().hex+'.json'),failure)
+        write_json(folder / 'failure.json',failure)
+    persist(job)
 
 
-def start(case, method):
-    if method not in ['B0', 'B1', 'B2', 'A1']:
-        raise ValueError('未知分析方法。')
-    if not provider.status()['available']:
-        raise ValueError('模型入口尚未配置；示例报告和材料查看仍可使用。')
+def _launch(job,case,method,background):
+    fd=worker_lock()
+    JOBS[job['id']]=job;persist(job)
+    def work():
+        try:run_pipeline(job['id'],case,method)
+        finally:fcntl.flock(fd,fcntl.LOCK_UN);os.close(fd)
+    if background:threading.Thread(target=work,daemon=True).start()
+    else:work()
+    return get_job(job['id'])
+
+
+def start(case, method='B1', *, force=False, max_requests=20, background=True):
+    if method not in ['B0', 'B1', 'B2', 'A1']:raise ValueError('未知分析方法。')
+    if not isinstance(max_requests,int) or not 4<=max_requests<=100:raise ValueError('请求上限应为 4 至 100 次。')
+    key=signature(case,method)
     with LOCK:
-        if any(j['status'] == 'running' for j in JOBS.values()):
-            raise ValueError('已有分析正在运行，请等待完成后再开始。')
-        jid = uuid.uuid4().hex
-        JOBS[jid] = {'id': jid, 'case_id': case['id'], 'status': 'running', 'stage': 'queued', 'step': 0, 'total': 4}
-    threading.Thread(target=run_pipeline, args=(jid, case, method), daemon=True).start()
-    return JOBS[jid]
+        if not force:
+            for p in sorted((DATA/'runs').glob('*/manifest.json'),key=lambda p:p.stat().st_mtime,reverse=True):
+                manifest=json.loads(p.read_text())
+                if manifest.get('signature')==key:return get_job(p.parent.name)
+        if any(j['status']=='running' for j in JOBS.values()):raise ValueError('已有分析正在运行，请等待完成后再开始。')
+        if not provider.status()['available']:raise ValueError('模型入口尚未配置；示例报告和材料查看仍可使用。')
+        jid=uuid.uuid4().hex;folder=DATA/'runs'/jid
+        write_json(folder/'input.json',case)
+        write_json(folder/'manifest.json',{'signature':key,'method':method,'config':provider.config_identity(),
+            'max_requests':max_requests,'created_at':now(),'workflow':WORKFLOW_VERSION})
+        job={'id':jid,'case_id':case['id'],'status':'running','stage':'queued','step':0,
+             'total':1 if method in ['B0','B1'] else 4,'created_at':now(),'max_requests':max_requests,'method':method}
+        return _launch(job,case,method,background)
+
+
+def resume(jid,*,allow_uncertain=False,max_requests=None,background=True):
+    with LOCK:
+        job=get_job(jid)
+        if job['status'] in ['completed','running']:return job
+        if job.get('error_kind') in ['cache','output_length']:
+            raise ValueError('该问题需要先修复缓存或输出长度设置，原样继续可能重复失败；已停止追加请求。')
+        if any(j['status']=='running' for j in JOBS.values()):raise ValueError('已有分析正在运行，请等待完成后再继续。')
+        folder=DATA/'runs'/jid
+        if not (folder/'manifest.json').exists():raise ValueError('旧版本任务没有可靠检查点，请新建分析；原记录保留。')
+        manifest=json.loads((folder/'manifest.json').read_text());case=json.loads((folder/'input.json').read_text())
+        if signature(case,manifest['method'])!=manifest['signature']:
+            raise ValueError('模型、材料或流程规则已改变。为避免混用结果，请恢复原设置，或明确新建分析。')
+        if not provider.status()['available']:raise ValueError('请先配置原模型入口，密钥可以重新填写。')
+        if job.get('uncertain') and not allow_uncertain:
+            raise ValueError('中断的请求可能已计费。请确认仅重试未完成阶段。')
+        if max_requests is not None:
+            if not isinstance(max_requests,int) or not manifest['max_requests']<=max_requests<=100:
+                raise ValueError('继续时只能明确提高请求上限，最多 100 次。')
+            manifest['max_requests']=max_requests
+        manifest['retry_uncertain']=allow_uncertain;write_json(folder/'manifest.json',manifest)
+        job.update(status='running',error='',uncertain=False,max_requests=manifest['max_requests'])
+        return _launch(job,case,manifest['method'],background)
 
 
 def import_result(case, report, origin='当前会话分析'):

@@ -89,8 +89,8 @@ def source_labels(case):
     return {m['id']:f'M{i:03d}' for i,m in enumerate(case['messages'],1)}
 
 
-def cited_sources(case, reader):
-    ids=set()
+def cited_sources(case, reader, extra_ids=()):
+    ids=set(extra_ids)
     def visit(value):
         if isinstance(value,dict):
             for key,item in value.items():
@@ -138,40 +138,60 @@ def reader_html(case,run):
     r=run['report']['reader'];lookup={m['id']:m for m in case['messages']}
     labels=source_labels(case);sources=cited_sources(case,r)
     def p(value):return '<p>'+escape(value)+'</p>'
-    def refs(ids):return '<small>'+', '.join(f'<a href="#source-{labels[i]}">{labels[i]}</a>' for i in dict.fromkeys(ids))+'</small>'
+    def refs(ids):return '<small class="refs">'+''.join(f'<a href="#source-{labels[i]}" aria-label="核对材料 {labels[i]}">{labels[i]}</a>' for i in dict.fromkeys(ids))+'</small>'
+    def picture(m,caption):
+        return '<button type="button" class="zoom-image" aria-label="放大 '+escape(caption)+'"><img loading="lazy" src="'+image_uri(m['image'])+'" alt="'+escape(caption)+'"></button>'
+    asset_root=Path(__file__).resolve().parents[1]/'static'
+    css=(asset_root/'reader.css').read_text();js=(asset_root/'reader.js').read_text()
+    minutes=max(1,(len(r['lead']+r['verdict'])+sum(len(p['text']) for c in r['chapters'] for p in c['paragraphs'])+449)//450)
     parts=['<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
-      '<title>'+escape(r['title'])+'</title><style>body{margin:0;color:#213047;background:#f2f4f8;font:17px/1.9 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}main{max-width:760px;margin:24px auto;padding:48px;background:white}h1{font-size:32px;line-height:1.5}h2{font-size:23px;margin-top:36px}small,figcaption{font-size:13px;color:#5a687b}blockquote{border-left:3px solid #4350ae;padding-left:20px;color:#4350ae}figure{margin:24px 0;text-align:center}img{max-width:100%;max-height:720px}li{margin-bottom:8px}@media(max-width:640px){main{padding:24px;margin:0}}@media print{main{margin:0;padding:0}body{background:white}figure{break-inside:avoid}}</style><main><small>知瓜 · 私密材料阅读版</small>',
-      '<h1>'+escape(r['title'])+'</h1>',p(r['deck']),p(r['lead']),'<h2>先认一下人</h2>']
-    for person in r['people']:parts.extend([p(person['name']+'：'+person['role']),refs(person.get('source_ids',[]))])
+      '<link rel="icon" href="data:,"><title>'+escape(r['title'])+'</title><style>'+css+'</style><main id="top"><small>知瓜 · 私密阅读版 / 约 '+str(minutes)+' 分钟</small>',
+      '<h1>'+escape(r['title'])+'</h1><p class="deck">'+escape(r['deck'])+'</p>',
+      '<nav class="reader-nav" aria-label="阅读导航"><a href="#now">先看结果</a>'+('<a href="#turns">关键转折</a>' if r.get('story') else '')+'<a href="#details">详细经过</a><a href="#originals">核对原文</a></nav>',
+      '<p class="lead">'+escape(r['lead'])+'</p><section class="now" id="now"><small>目前进展</small><h2>'+escape(r['verdict_title'])+'</h2>',p(r['verdict']),refs(r['verdict_source_ids']),'</section>']
+    if r['people']:
+        parts.append('<section><h2>这件事里都有谁</h2><div class="people">')
+        for person in r['people']:parts.extend(['<div class="person"><strong>'+escape(person['name'])+'</strong>',p(person['role']),refs(person.get('source_ids',[])),'</div>'])
+        parts.append('</div></section>')
+    parts.append('<div class="controls"><button id="expand-story" type="button" aria-expanded="false">展开详细经过</button><small>展开、核对与放大图片都在本地完成</small></div>')
     if r.get('story'):
-        story=r['story'];parts.extend(['<h2>事情是怎样走到这一步的</h2>',p(story['central_question'])])
+        story=r['story'];parts.extend(['<section id="turns"><h2>事情怎么发展</h2>',p(story['central_question']),'<p class="muted">编号是阅读顺序；回述与未知时序已分别标明。</p>'])
         for i,step in enumerate(story['arc'],1):
-            parts.extend(['<h3>'+str(i)+' · '+escape(step['stage'])+'</h3>',p(step['happened']),
-                p('变化：'+step['changed']),'<small>'+escape(step['order_basis'])+'</small>',refs(step['source_ids'])])
-        parts.append('<small>'+escape(story['timeline_note'])+'</small>')
+            parts.extend(['<details class="turn"'+(' open' if i==1 else '')+'><summary><span class="turn-number">'+str(i)+'</span><span><strong>'+escape(step['stage'])+'</strong><small>'+escape(step['order_basis'])+'</small></span></summary>',p(step['happened']),p('变化在这里：'+step['changed']),refs(step['source_ids']),'</details>'])
+        parts.append('<details class="scope"><summary>时间范围与不确定之处</summary>'+p(story['timeline_note'])+'</details></section>')
+    parts.append('<section id="details"><h2>把经过展开讲</h2>')
     for ch in r['chapters']:
-        parts.append('<h2>'+escape(ch['title'])+'</h2>')
+        parts.append('<details class="chapter"><summary>'+escape(ch['title'])+'</summary>')
         for para in ch['paragraphs']:parts.extend([p(para['text']),refs(para['source_ids'])])
         if ch['quote_text']:parts.append('<blockquote>'+escape(ch['quote_text'])+p('—— '+ch['quote_speaker'])+refs([ch['quote_source_id']])+'</blockquote>')
-        if ch['image_id']:
-            parts.append('<figure><img src="'+image_uri(lookup[ch['image_id']]['image'])+'" alt="'+escape(ch['image_caption'])+'"><figcaption>'+escape(ch['image_caption'])+' '+refs([ch['image_id']])+p(supplement_note(lookup[ch['image_id']]))+'</figcaption></figure>')
+        if ch['image_id']:parts.append('<figure>'+picture(lookup[ch['image_id']],ch['image_caption'])+'<figcaption>'+escape(ch['image_caption'])+refs([ch['image_id']])+p(supplement_note(lookup[ch['image_id']]))+'</figcaption></figure>')
+        parts.append('</details>')
+    parts.append('</section>')
+    selected={m['id'] for m in sources}
+    claims=[c for c in run['report'].get('claims',[]) if selected.intersection(c['support_ids']+c['conflict_ids'])][:4]
+    sources=cited_sources(case,r,[mid for c in claims for mid in c['support_ids']+c['conflict_ids']])
+    if claims:
+        parts.append('<section><h2>大家争的是什么</h2><p class="muted">主张与核对结果分开呈现；展开可看解释与反证。</p>')
+        for c in claims:parts.extend(['<details class="dispute"><summary>'+escape(c['statement'])+'<small>'+escape(c['status'])+'</small></summary>',p(c['reason']),refs(c['support_ids']),p('反证与不同说法')+refs(c['conflict_ids']) if c['conflict_ids'] else '', '</details>'])
+        parts.append('</section>')
     if r.get('story',{}).get('threads'):
-        parts.append('<h2>把支线放回主线</h2>')
+        parts.append('<details class="scope"><summary>与主线有关的其他事</summary>')
         for thread in r['story']['threads']:parts.extend([p(thread['name']+'：'+thread['role_in_story']),refs(thread['source_ids'])])
-    parts.extend(['<h2>'+escape(r['verdict_title'])+'</h2>',p(r['verdict']),refs(r['verdict_source_ids']),'<h2>还有哪些地方没说清</h2><ul>'])
-    parts.extend('<li>'+escape(q)+'</li>' for q in r['open_questions'])
-    parts.extend(['</ul><hr>',p(source_note(case)),'<small>整理时间：'+escape(local_time(run.get('reader_updated_at',run['created_at'])))+'（香港时间）。点击短编号可跳到文末原文。</small>',
-        '<h2>原文附录</h2>',p('以下为文中引用的原始材料及其父材料，不代表全部群记录。保留原文、显示名与时间，可能含个人信息，仅供私下核对；编号表示本包顺序，不代表事件先后。')])
+        parts.append('</details>')
+    if r['open_questions']:
+        parts.append('<h2>还有哪些事没说清</h2><ul>');parts.extend('<li>'+escape(q)+'</li>' for q in r['open_questions']);parts.append('</ul>')
+    parts.extend(['<details class="scope"><summary>整理范围与来源说明</summary>',p(source_note(case)),'<small>整理时间：'+escape(local_time(run.get('reader_updated_at',run['created_at'])))+'（香港时间）。</small></details>',
+        '<section id="originals"><h2>原文附录 · 按需核对</h2>',p('以下为文中引用的完整材料及其父材料，不代表全部群记录。显示名、原文与图片可能含个人信息，仅供私下核对；编号表示本包顺序，不代表事件先后。'),
+        '<label for="source-search">搜索原文或发言者</label><input id="source-search" type="search" placeholder="例如：材料编号、关键词或名字"><p id="source-count" class="muted" role="status">共 '+str(len(sources))+' 条材料，点击展开</p>'])
     for m in sources:
-        parts.extend([f'<section id="source-{labels[m["id"]]}"><h3>'+labels[m['id']]+' · '+escape(m['speaker'])+'</h3>',
-            '<small>'+escape(local_time(m.get('timestamp') or '原始时间未知'))+'</small>',
-            '<pre style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit">'+escape(m['text'])+'</pre>'])
+        parts.extend([f'<details class="original" id="source-{labels[m["id"]]}"><summary><strong>'+labels[m['id']]+' · '+escape(m['speaker'])+'</strong><small>'+escape(local_time(m.get('timestamp') or '原始时间未知'))+'</small></summary>',
+            '<pre>'+escape(m['text'])+'</pre>'])
         if m.get('parent_id'):parts.append('所属材料 '+refs([m['parent_id']]))
-        if m.get('image'):parts.append('<img src="'+image_uri(m['image'])+'" alt="材料 '+labels[m['id']]+' 图片">')
+        if m.get('image'):parts.append(picture(m,'材料 '+labels[m['id']]+' 图片'))
         if supplement_note(m):parts.append(p(supplement_note(m)))
         if media_note(m):parts.append(p('图片缺口：'+media_note(m)+'；未据此补写图片内容。'))
-        parts.append('</section>')
-    parts.append('</main></html>')
+        parts.append('</details>')
+    parts.append('</section><a class="jump-top" href="#top">回到事件概况</a></main><dialog id="image-viewer" aria-label="图片原文"><button type="button">关闭图片</button><p></p><img alt=""></dialog><script>'+js+'</script></html>')
     return ''.join(parts)
 
 
@@ -250,15 +270,21 @@ def reader_pdf(case,run,path,*,include_sources=True):
     class OverviewEnd(Flowable):
         def wrap(self,*args):return (0,0)
         def draw(self):metrics['overview_pages']=self.canv.getPageNumber()
+    class Outline(Flowable):
+        def __init__(self,label,key):super().__init__();self.label=label;self.key=key
+        def wrap(self,*args):return (0,0)
+        def draw(self):
+            self.canv.bookmarkPage(self.key)
+            self.canv.addOutlineEntry(self.label,self.key,level=0)
     fonts=pdf_fonts()
     ink=colors.HexColor('#213047');muted=colors.HexColor('#5a687b');accent=colors.HexColor('#4350ae')
     def style(name,size,leading,**kw):
         return ParagraphStyle(name,fontName=fonts['body'],fontSize=size,leading=leading,
-                              wordWrap='CJK',textColor=ink,spaceAfter=10,**kw)
-    body=style('ReaderBody',11.7,21)
+                              wordWrap='CJK',textColor=ink,spaceAfter=7,**kw)
+    body=style('ReaderBody',11.7,19.5)
     title=style('ReaderTitle',25,36,spaceBefore=8)
     deck=style('ReaderDeck',13,23)
-    heading=style('ReaderHeading',17,26,spaceBefore=18,keepWithNext=True)
+    heading=style('ReaderHeading',17,26,spaceBefore=14,keepWithNext=True)
     small=style('ReaderSmall',8.5,14);small.textColor=muted
     quote=style('ReaderQuote',13,23,leftIndent=14,rightIndent=14);quote.textColor=accent
     for s in [title,heading]:s.fontName=fonts['heading']
@@ -275,18 +301,19 @@ def reader_pdf(case,run,path,*,include_sources=True):
         return Paragraph(escape(prefix)+' / '.join(links),small)
     title_text=r['title']
     if len(title_text)>=19 and '：' in title_text:title_text=title_text.replace('：','：\n',1)
-    story=[p('知瓜 · 一起把前因后果看明白',small),p(title_text,title),p(r['deck'],deck),
+    story=[Outline('先看事件与当前结果','overview'),p('知瓜 · 私密阅读版',small),p(title_text,title),p(r['deck'],deck),
            HRFlowable(width='100%',thickness=.8,color=colors.HexColor('#cfd6e4'),spaceBefore=8,spaceAfter=18),p(r['lead'])]
-    if r.get('story') and r['people']:
-        story.append(p('人物：'+'；'.join(person['name']+'——'+person['role'] for person in r['people']),small))
-    elif r['people']:
-        story.append(p('先认一下人',heading))
-        rows=[[p(person['name'],small),p(person['role'],small)] for person in r['people']]
-        table=Table(rows,colWidths=[85,410],hAlign='LEFT')
-        table.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),colors.HexColor('#f1f3f9')),
-            ('VALIGN',(0,0),(-1,-1),'TOP'),('LEFTPADDING',(0,0),(-1,-1),12),('RIGHTPADDING',(0,0),(-1,-1),12),
-            ('TOPPADDING',(0,0),(-1,-1),9),('BOTTOMPADDING',(0,0),(-1,-1),2)]))
-        story.append(table)
+    state=Table([[p('目前进展',small)],[p(r['verdict_title'],deck)],[p(r['verdict'])],[references(r['verdict_source_ids'],'依据：')]],colWidths=[495],hAlign='LEFT')
+    state.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),colors.HexColor('#eff6f3')),
+        ('LINEBEFORE',(0,0),(0,-1),3,colors.HexColor('#276b61')),
+        ('LEFTPADDING',(0,0),(-1,-1),14),('RIGHTPADDING',(0,0),(-1,-1),14),
+        ('TOPPADDING',(0,0),(-1,0),10),('BOTTOMPADDING',(0,-1),(-1,-1),8)]))
+    story.extend([Spacer(1,8),state])
+    if r['people']:
+        story.append(p('这件事里都有谁',heading))
+        for person in r['people']:story.append(p(person['name']+'：'+person['role'],body))
+    story.append(p('接着看关键转折与详细经过。文末保留引用原文和图片，可按需核对；点击材料编号即可跳转。',small))
+    story.extend([OverviewEnd(),PageBreak(),Outline('关键转折与详细经过','story')])
     if r.get('story'):
         spine=r['story']
         story.extend([p('事情是怎样走到这一步的',heading),p(spine['central_question'])])
@@ -301,7 +328,7 @@ def reader_pdf(case,run,path,*,include_sources=True):
             ('LINEBELOW',(0,0),(-1,-2),.5,colors.HexColor('#dfe4ed')),
             ('LEFTPADDING',(0,0),(-1,-1),7),('RIGHTPADDING',(0,0),(-1,-1),9),
             ('TOPPADDING',(0,0),(-1,-1),8),('BOTTOMPADDING',(0,0),(-1,-1),4)]))
-        story.extend([table,Spacer(1,8),p(spine['timeline_note'],small),OverviewEnd(),PageBreak()])
+        story.extend([table,Spacer(1,8)])
     for chapter in r['chapters']:
         story.append(p(chapter['title'],heading))
         refs=[]
@@ -321,17 +348,15 @@ def reader_pdf(case,run,path,*,include_sources=True):
         story.append(p('把支线放回主线',heading))
         for thread in r['story']['threads']:
             story.extend([p(thread['name']+'：'+thread['role_in_story']),references(thread['source_ids'])])
-    story.extend([p(r['verdict_title'],heading),p(r['verdict']),references(r['verdict_source_ids'],'判断依据：')])
+
     if r['open_questions']:
-        story.append(p('还有哪些地方没说清',heading))
-        for x in r['open_questions']:story.append(p('• '+x))
-    if include_sources and sources:
-        story.extend([PageBreak(),p('原文附录',title)])
+        story.append(KeepTogether([p('还有哪些地方没说清',heading)]+[p('• '+x) for x in r['open_questions']]))
     story.append(KeepTogether([Spacer(1,14),HRFlowable(width='100%',thickness=.5,color=colors.HexColor('#d5dce6'),spaceAfter=12),
-        p('关于这份整理',small),p(source_note(case),small),
+        p('关于这份整理',small),p(r.get('story',{}).get('timeline_note',''),small),p(source_note(case),small),
         p('这是对现有材料的还原与评价，不是对记录外全部事实的认证。文中短编号对应文末原文附录；完整证据清单和运行信息保留在工作台。',small),
         p('整理时间：'+local_time(run.get('reader_updated_at',run['created_at']))+'（香港时间）',small)]))
     if include_sources and sources:
+        story.extend([PageBreak(),Outline('原文与图片 · 按需核对','originals'),p('原文附录 · 按需核对',title)])
         story.append(p('以下保留文中引用的原始材料及其父材料，不代表全部群记录。原文、显示名与时间可能含个人信息，仅供私下核对。编号表示本包顺序，不代表事件先后。',small))
         source_heading=ParagraphStyle('SourceHeading',parent=heading,fontSize=12,leading=20,spaceBefore=12,spaceAfter=6)
         source_body=ParagraphStyle('SourceBody',parent=body,fontSize=11,leading=19,spaceAfter=0)

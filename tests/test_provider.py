@@ -23,7 +23,7 @@ class ProviderTests(unittest.TestCase):
             return Response(json.dumps({'choices':[{'message':{'content':content},'finish_reason':finish}],'usage':{'prompt_tokens':4,'completion_tokens':2}}).encode())
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ,{'CHIGUA_PROVIDER':'deepseek','CHIGUA_MODEL':'deepseek-flash','CHIGUA_BASE_URL':'https://api.deepseek.com','CHIGUA_API_KEY':'test-secret-value'}), patch('urllib.request.urlopen',fake):
             out,stats=generate('Return JSON.',{'type':'object'},Path(folder),'test')
-            logs=''.join(p.read_text() for p in Path(folder).glob('*'))
+            logs=''.join(p.read_text() for p in Path(folder).rglob('*') if p.is_file())
             self.assertNotIn('test-secret-value',logs)
         return captured,out,stats
     def test_deepseek_json_contract_and_usage(self):

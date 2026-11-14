@@ -15,17 +15,24 @@ class ReeditTests(unittest.TestCase):
         self.previous={'reader':{'old':True},'purpose':'manual'};core.write_json(self.folder/'reader.json',self.previous)
     def tearDown(self):self.tmp.cleanup()
     def invoke(self):
-        with patch.object(core,'DATA',self.root),patch('sys.argv',['reader-edition.py','oldrun']):
+        with patch.object(core,'DATA',self.root),patch.object(pipeline,'DATA',self.root),patch('sys.argv',['reader-edition.py','oldrun']):
             runpy.run_path(str(SCRIPT),run_name='__main__')
     def test_failed_reedit_never_replaces_previous_edition(self):
         with patch.object(editor,'edit_report',side_effect=ValueError('rejected')):
             with self.assertRaisesRegex(ValueError,'rejected'):self.invoke()
         self.assertEqual(json.loads((self.folder/'reader.json').read_text()),self.previous)
         self.assertEqual(json.loads((self.folder/'result.json').read_text()),self.original)
+    def test_repeated_reedit_uses_same_checkpoint_directory(self):
+        paths=[]
+        def fail(case,analysis,folder,progress):paths.append(folder);raise ValueError('mock failure')
+        with patch.object(editor,'edit_report',side_effect=fail):
+            for _ in range(2):
+                with self.assertRaisesRegex(ValueError,'mock failure'):self.invoke()
+        self.assertEqual(paths[0],paths[1]);self.assertTrue((paths[0]/'manifest.json').exists())
     def test_success_uses_snapshot_and_archives_previous(self):
         accepted={'reader':{'new':True},'workflow_version':'test'}
         def edit(case,analysis,folder,progress):
-            folder.mkdir(parents=True);return accepted
+            folder.mkdir(parents=True,exist_ok=True);return accepted
         with patch.object(editor,'edit_report',side_effect=edit) as mock,patch.object(pipeline,'load_case',side_effect=AssertionError('must use snapshot')):
             self.invoke()
         self.assertEqual(mock.call_args.args[0],self.snapshot)

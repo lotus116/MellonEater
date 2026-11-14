@@ -46,6 +46,18 @@ class ServerTests(unittest.TestCase):
         code,data=self.request('/api/analyze',{'case_id':c['id'],'method':'B1'})
         self.assertEqual(code,400)
         self.assertTrue((self.root/'cases'/f"{c['id']}.json").exists())
+    def test_resume_endpoint_has_same_auth_and_preserves_explicit_retry_choice(self):
+        payload={'job_id':'syntheticjob','allow_uncertain':True,'max_requests':25}
+        with patch.object(pipeline,'resume',return_value={'id':'syntheticjob','status':'running'}) as resume:
+            self.assertEqual(self.request('/api/resume',payload,token=False)[0],403);resume.assert_not_called()
+            self.assertEqual(self.request('/api/resume',payload,headers={'Origin':'https://foreign.test'})[0],403);resume.assert_not_called()
+            self.assertEqual(self.request('/api/resume',payload)[0],202)
+            resume.assert_called_once_with('syntheticjob',allow_uncertain=True,max_requests=25)
+    def test_failed_job_visible_from_disk_without_model_call(self):
+        core.write_json(self.root/'runs'/'stopped'/'job.json',{'id':'stopped','case_id':'synthetic','status':'failed','stage':'B1','error':'模拟中断'})
+        with patch.object(pipeline.provider,'generate') as gen:
+            code,job=self.request('/api/jobs/stopped');self.assertEqual(code,200);self.assertEqual(job['status'],'failed');gen.assert_not_called()
+
     def test_cross_origin_and_missing_token_rejected(self):
         payload={'title':'x','text':'x'}
         self.assertEqual(self.request('/api/cases',payload,token=False)[0],403)

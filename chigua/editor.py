@@ -5,10 +5,11 @@ import hashlib
 import json
 from pathlib import Path
 from . import provider
+from .checkpoints import CallFailure
 from .core import (STR, STRS, STORY_SCHEMA, READER_SCHEMA, READER_RULES,
                    schema_obj, validate_schema, validate_reader, write_json, now)
 
-VERSION='editorial-v1.2'
+VERSION='editorial-v2.0'
 MAX_REVISIONS=2
 DIMENSIONS=['mainline','event_boundaries','chronology','causality','evidence','ending','readability','privacy']
 PLAN_SCHEMA=schema_obj({
@@ -48,7 +49,7 @@ def reader_issues(reader,messages):
         return ['结构或证据校验：'+str(exc)]
     def cap(text,limit,label):
         if len(text)>limit:issues.append(f'{label}过长：{len(text)}字，最多{limit}字。')
-    for field,limit in [('title',28),('deck',100),('lead',160)]:cap(reader[field],limit,field)
+    for field,limit in [('title',28),('deck',100),('lead',160),('verdict',220)]:cap(reader[field],limit,field)
     for field in ['title','deck','lead','verdict','verdict_title']:
         if not reader[field].strip():issues.append(field+'不能为空。')
     story=reader['story'];cap(story['timeline_note'],220,'时间范围说明')
@@ -135,13 +136,9 @@ def edit_report(case,analysis,folder:Path,progress=None):
         try:validate_schema(candidate,READER_SCHEMA);validate_reader(candidate,messages);structural=True
         except (ValueError,TypeError,KeyError):structural=False
         passed=False
-        if structural:
+        if structural and not issues:
             layout=layout_probe(case,analysis,candidate,folder/f'candidate-{attempt}.pdf')
-            if layout['status']=='overflow':issues.append(layout['note'])
-            if layout.get('overview_pages',1)>1:issues.append('首页主线总览溢出到第二页，请压缩导语、人物和阶段文字。')
-            if layout.get('pages',0)>5:issues.append('阅读稿超过5页，请删减重复正文，不截断文字或缩小到难读。')
-            if layout.get('pages',0)>2 and layout.get('last_page_fill',1)<.22:
-                issues.append('末页内容不足页面的22%，出现零碎尾页。请精简重复段落、引文或说明，让尾页内容回到前页；不能删除重要事实或缩小字体。')
+            # Layout is deterministic: never pay for prose rewriting just to fix pagination.
             review=call(f'editor_review_{attempt}',
                 '你是独立审稿人。对照原文逐项审查候选稿，不能只复述提纲或自称通过。'+
                 '尤其核查时间与因果、并行事件是否被强行串联、是否又在逐段解读聊天。'+
@@ -151,6 +148,9 @@ def edit_report(case,analysis,folder:Path,progress=None):
         history.append({'attempt':attempt,'issues':issues,'review':review,'layout':layout})
         write_json(folder/'checks.json',history)
         if passed and not issues:
+            if layout['status']=='overflow' or layout.get('overview_pages',1)>1 or layout.get('pages',0)>5:
+                write_json(folder/'layout-pending.json',{'reader':candidate,'review':review,'layout':layout,'trace':trace})
+                raise CallFailure('内容审稿已通过，但排版需要调整。候选稿与审稿已缓存；继续时会先复验排版，不重写全文。',kind='layout')
             result={'reader':candidate,'created_at':now(),'trace':trace,'purpose':'automatic_editorial',
                 'workflow_version':VERSION,'policy_sha256':hashlib.sha256(READER_RULES.encode()).hexdigest(),
                 'quality':{'status':'passed','revisions':attempt,'layout':layout,
@@ -161,6 +161,6 @@ def edit_report(case,analysis,folder:Path,progress=None):
         candidate=call(f'editor_rewrite_{attempt+1}',
             '按下列反馈自动返修，返回完整 reader 对象。保留正确事实和重要反证，不得用删限定语来缩短。'+
             '\n提纲：'+plan_text+'\n候选稿：'+json.dumps(candidate,ensure_ascii=False)+
-            '\n反馈：'+json.dumps(history[-1],ensure_ascii=False),READER_SCHEMA)
+            '\n反馈：'+json.dumps({'issues':issues,'review':review},ensure_ascii=False),READER_SCHEMA)
     write_json(folder/'rejected.json',{'status':'needs_revision','created_at':now(),'checks':history,'trace':trace})
     raise ValueError('自动编辑两轮返修后仍未通过。分析原稿和候选稿已保留，本次未发布完成报告。')
