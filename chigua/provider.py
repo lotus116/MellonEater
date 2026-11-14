@@ -29,6 +29,24 @@ def parse_json(text):
     return json.loads(text)
 
 
+def codex_failure(stderr_path):
+    """Expose an actionable category, never raw stderr or submitted material."""
+    try:
+        with stderr_path.open('rb') as f:
+            f.seek(max(0,stderr_path.stat().st_size-65536))
+            diagnostic=f.read().decode('utf-8',errors='replace').lower()
+    except OSError:diagnostic=''
+    if ('failed to initialize in-process app-server client' in diagnostic and 'operation not permitted' in diagnostic):
+        return 'Codex 启动被系统权限阻止，分析尚未开始。请关闭旧服务，再双击 start.command 从终端启动 demo；材料已保留，无需重新导入。'
+    if any(s in diagnostic for s in ['not logged in','authentication failed','refresh token','401 unauthorized']):
+        return 'Codex 登录状态不可用，请在本机重新登录后重试；材料已保留。'
+    if any(s in diagnostic for s in ['rate limit','usage limit','429 too many requests']):
+        return 'Codex 暂时达到使用限额，请稍后重试；材料已保留。'
+    if any(s in diagnostic for s in ['connection refused','failed to connect','dns error','network is unreachable']):
+        return 'Codex 连接服务失败，请检查网络后重试；材料已保留。'
+    return 'Codex 未返回完整结果；材料和本机错误记录已保留。请重试，若再次失败可据错误记录排查。'
+
+
 def generate(prompt, schema, run_dir: Path, stage, images=()):
     config = status()
     if not config['available']:
@@ -53,11 +71,16 @@ def generate(prompt, schema, run_dir: Path, stage, images=()):
         args += ['-']
         # Fixed argv and stdin: imported content is never interpreted by a shell.
         event_path=run_dir / f'{stage}.events.jsonl'
-        with event_path.open('w',encoding='utf-8') as stdout, (run_dir / f'{stage}.stderr.txt').open('w',encoding='utf-8') as stderr:
-            result = subprocess.run(args, input=prompt, stdout=stdout, stderr=stderr, text=True, timeout=600)
+        stderr_path=run_dir / f'{stage}.stderr.txt'
+        try:
+            with event_path.open('w',encoding='utf-8') as stdout, stderr_path.open('w',encoding='utf-8') as stderr:
+                result = subprocess.run(args, input=prompt, stdout=stdout, stderr=stderr, text=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError('Codex 本阶段超过 10 分钟，已停止等待。材料与已完成阶段保留，请稍后重试或缩小材料范围。') from None
         if result.returncode or not out.exists():
-            raise RuntimeError('Codex 分析未完成。请检查本机登录与网络；运行目录保留了错误记录。')
+            raise RuntimeError(codex_failure(stderr_path))
         raw = out.read_text(encoding='utf-8')
+        if not raw.strip():raise RuntimeError('Codex 返回了空结果，未发布报告；材料已保留，可重试。')
         for line in event_path.read_text(encoding='utf-8').splitlines():
             try:
                 event = json.loads(line)

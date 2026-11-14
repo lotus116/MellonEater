@@ -107,3 +107,9 @@ JSON 可使用 `{"messages":[{"id":"M1","speaker":"甲","text":"原文","timesta
 实施范围和接入路线见 [计划](docs/PLAN.md) 与 [Mac 接入调研](docs/MAC_ACCESS.md)。
 
 小规模行为检查可先运行 `python scripts/prepare-variants.py`，再运行 `python scripts/run-smoke.py --provider codex --method B1`。该操作会运行四个案例，每例包括分析与自动编辑；预期行为和输出索引保存于被忽略的 `data/private/`，不把预期答案传给模型。自动编辑跨案例检查运行 `python scripts/eval-editorial.py --provider codex`，使用三份完全虚构的新材料，结果和 PDF 仅留本地。验证记录见 [验收说明](docs/VALIDATION.md)。
+
+## Codex 启动失败
+
+若提示「Codex 启动被系统权限阻止」，表示本地服务的运行权限阻止了 Codex 初始化，不能据此认定登录失效。停止旧服务后，从 Finder 双击 `start.command` 在普通终端中启动，再刷新网页重试；无需重新导入材料。不要把由受限开发工具启动的 HTTP 服务能打开页面，当成模型调用也已验证。模型分析仍使用只读模式，禁用额外执行工具。
+
+登录失效、使用限额、网络连接失败、单阶段十分钟超时会分别显示提示。未知错误保留本机运行记录，不把原始错误日志或聊天内容直接显示到提示中。

@@ -1,10 +1,12 @@
 import json
 import os
 import tempfile
+import subprocess
 import unittest
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 from chigua.provider import generate, parse_json
 
 
@@ -36,6 +38,19 @@ class ProviderTests(unittest.TestCase):
     def test_fences_allowed_but_garbage_not_silently_salvaged(self):
         self.assertEqual(parse_json('```json\n{"a":1}\n```'),{'a':1})
         with self.assertRaises(ValueError):parse_json('random text {"a":1}')
+    def test_codex_initialization_error_is_actionable_and_private(self):
+        def fail(args,**kwargs):
+            kwargs['stderr'].write('private synthetic content\nError: failed to initialize in-process app-server client: Operation not permitted (os error 1)\n')
+            return SimpleNamespace(returncode=1)
+        with tempfile.TemporaryDirectory() as folder,patch.dict(os.environ,{'CHIGUA_PROVIDER':'codex'}),patch('chigua.provider.shutil.which',return_value='/synthetic/codex'),patch('chigua.provider.subprocess.run',side_effect=fail):
+            with self.assertRaisesRegex(RuntimeError,'启动被系统权限阻止') as error:
+                generate('private synthetic prompt',None,Path(folder),'test')
+            self.assertNotIn('private synthetic',str(error.exception))
+            self.assertIn('无需重新导入',str(error.exception))
+    def test_codex_timeout_is_not_misreported_as_login_failure(self):
+        with tempfile.TemporaryDirectory() as folder,patch.dict(os.environ,{'CHIGUA_PROVIDER':'codex'}),patch('chigua.provider.shutil.which',return_value='/synthetic/codex'),patch('chigua.provider.subprocess.run',side_effect=subprocess.TimeoutExpired(['codex'],600)):
+            with self.assertRaisesRegex(RuntimeError,'超过 10 分钟'):
+                generate('synthetic',None,Path(folder),'test')
 
 
 if __name__=='__main__':unittest.main()
