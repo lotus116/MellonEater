@@ -58,7 +58,10 @@ def get_job(jid):
     elif (folder/'result.json').exists():
         return {'id':jid,'status':'completed','result':json.loads((folder/'result.json').read_text())}
     else:raise ValueError('任务不存在。')
-    if (folder/'result.json').exists():job.update(status='completed',result=json.loads((folder/'result.json').read_text()))
+    if (folder/'result.json').exists():
+        job.update(status='completed',result=json.loads((folder/'result.json').read_text()),error='',uncertain=False)
+        job.pop('error_kind',None)
+        job.pop('diagnostics',None)
     job['usage']=usage_summary(folder)
     job['cached_steps']=sum(1 for _ in folder.rglob('completed.json'))
     if job.get('status')=='failed' and '两轮返修后仍未通过' in job.get('error',''):
@@ -69,6 +72,11 @@ def get_job(jid):
             if history:
                 last=history[-1];job['diagnostics']=(last.get('review') or {}).get('issues',[])+[{'problem':x} for x in last.get('issues',[])]
     job['can_resume']=job.get('error_kind') not in ['editorial_exhausted','review_invalid','structure','visual_mapping','workflow_changed','cache','output_length']
+    if (job['status']=='failed' and job.get('workflow')==compact.VERSION
+            and job.get('error_kind')=='review_invalid'
+            and compact.can_recover_audit(folder/'editorial',job.get('stage',''))):
+        job['can_resume']=True
+        job['error']='已恢复审稿意见中的段落定位。可以从已保存的步骤继续局部修改和复核。'
     return job
 
 
@@ -187,7 +195,8 @@ def resume(jid,*,allow_uncertain=False,max_requests=None,max_total_tokens=None,b
     with LOCK:
         job=get_job(jid)
         if job['status'] in ['completed','running']:return job
-        if job.get('error_kind') in ['editorial_exhausted','review_invalid','structure','visual_mapping','workflow_changed'] and not local_only:
+        if (job.get('error_kind') in ['editorial_exhausted','review_invalid','structure','visual_mapping','workflow_changed']
+                and job.get('can_resume') is False and not local_only):
             raise ValueError('这次失败需要修正具体问题，原样续跑不会改善，已停止追加调用。请查看问题详情；新版流程须明确新建任务。')
         if job.get('error_kind') in ['cache','output_length']:
             raise ValueError('该问题需要先修复缓存或输出长度设置，原样继续可能重复失败；已停止追加请求。')
@@ -209,6 +218,8 @@ def resume(jid,*,allow_uncertain=False,max_requests=None,max_total_tokens=None,b
                 raise ValueError('继续时只能明确提高已记录 token 阈值，最多 1,000,000。')
             manifest['max_total_tokens']=max_total_tokens
         manifest['retry_uncertain']=allow_uncertain;manifest['local_only']=local_only;write_json(folder/'manifest.json',manifest)
+        job.pop('error_kind',None)
+        job.pop('diagnostics',None)
         job.update(status='running',error='',uncertain=False,max_requests=manifest['max_requests'],max_total_tokens=manifest.get('max_total_tokens'))
         return _launch(job,case,manifest['method'],background)
 

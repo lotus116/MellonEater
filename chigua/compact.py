@@ -78,6 +78,19 @@ def evidence_text(pack,sid):
     return '\n'.join(parts)
 
 
+def narrow_paragraph(issue, value):
+    """Resolve a paragraph pointer only when its text contains the exact quote."""
+    path = issue['path']
+    quote = issue['candidate_excerpt']
+    if (not re.fullmatch(r'/reader/chapters/\d+/paragraphs/\d+', path)
+            or not isinstance(value, dict) or not isinstance(value.get('text'), str)
+            or not quote.strip() or quote not in value['text']):
+        return value
+    issue.setdefault('original_path', path)
+    issue['path'] = path + '/text'
+    return value['text']
+
+
 def audit_issues(audit,candidate,pack):
     validate_schema(audit,AUDIT_SCHEMA);blocking=[];seen=set()
     ids={m['id'] for m in pack['messages']}
@@ -100,6 +113,7 @@ def audit_issues(audit,candidate,pack):
         if not issue['key'] or issue['key'] in seen:raise ValueError('审稿问题编号缺失或重复。')
         seen.add(issue['key'])
         value=locate(candidate,issue['path'])
+        value=narrow_paragraph(issue,value)
         if isinstance(value,dict) or isinstance(value,list) and any(isinstance(x,(list,dict)) for x in value):
             raise ValueError('审稿定位范围过大，必须指出具体文字或引用字段，不能授权整篇重写。')
         text=value if isinstance(value,str) else dump(value)
@@ -116,6 +130,28 @@ def audit_issues(audit,candidate,pack):
             blocking.append(issue)
     if (audit['decision']=='revise')!=bool(blocking):raise ValueError('审稿结论与阻断问题不一致。')
     return blocking
+
+
+def can_recover_audit(folder, stage):
+    """Check saved outputs without calling the model or altering the run."""
+    match = re.fullmatch(r'audit_(?:contract_fix_)?(\d+)', stage)
+    if not match:
+        return False
+    revision = match[1]
+    try:
+        candidate = json.loads((folder / f'candidate-{revision}.json').read_text())
+        pack = json.loads((folder / 'evidence-pack.json').read_text())
+        for name in (f'audit_{revision}', f'audit_contract_fix_{revision}'):
+            try:
+                audit = json.loads((folder / f'{name}.output.json').read_text())
+                issues = audit_issues(audit, candidate, pack)
+            except (OSError, ValueError, IndexError, KeyError, TypeError):
+                continue
+            if any(issue.get('original_path', '') + '/text' == issue['path'] for issue in issues):
+                return True
+    except (OSError, ValueError):
+        pass
+    return False
 
 
 def apply_patch(candidate,patch,issues):
@@ -165,6 +201,22 @@ def audit_task(pack,candidate,previous):
             '未发现阻断问题时 decision=pass，可留下 suggestion；严禁为了凑维度找问题。'
             '\n先前已定位的问题（可能已解决，不默认正确，核对是否解决，勿反向改回）：'+dump(previous)+
             '\n候选稿：'+dump(candidate))
+
+
+def cited_pack(pack, issues):
+    ids = {sid for issue in issues for sid in issue['source_ids']}
+    messages = [message for message in pack['messages'] if message['id'] in ids]
+    image_ids = {message.get('image_observation_ref') for message in messages}
+    return {**pack, 'messages': messages,
+            'image_observations': [row for row in pack['image_observations'] if row['source_id'] in image_ids]}
+
+
+def revision_audit_task(pack, candidate, previous):
+    changes = {issue['path']: locate(candidate, issue['path']) for issue in previous}
+    return (RULES + '\n只复核已修改的字段，并与所列原文、图中文字和先前问题对照。'
+            '字段键是完整 JSON Pointer，直接用作 path，段落文字路径以 /text 结尾。'
+            '已解决的问题不要重新提出。仍会误导读者时才阻断，引用修改后的原句和原材料逐字内容。'
+            '\n相关材料：'+dump(pack)+'\n先前问题：'+dump(previous)+'\n修改后的字段：'+dump(changes))
 
 
 def execute(case,folder,progress=lambda stage:None):
@@ -231,11 +283,18 @@ def execute(case,folder,progress=lambda stage:None):
         if fixes:write_json(folder/f'presentation-{revision}.json',fixes)
         # Auditor sees originals + candidate, never the previous judge's unverified
         # claims as facts. Earlier issues are included only for continuity checks.
+        review_pack = cited_pack(pack, previous) if previous else pack
+        review_ids = {row['source_id'] for row in review_pack['image_observations']}
+        review_images = [name for name in names if assets[name] in review_ids]
+        review_task = (revision_audit_task(review_pack, candidate, previous) if previous
+                       else audit_task(pack,candidate,previous))
         audit=None
         try:
-            audit=call(f'audit_{revision}',audit_task(pack,candidate,previous),AUDIT_SCHEMA,
-                       images=names,thinking=POLICY['audit_thinking'],tokens=POLICY['audit_tokens'])
-            blocking=audit_issues(audit,candidate,pack)
+            audit=call(f'audit_{revision}',review_task,AUDIT_SCHEMA,
+                       images=review_images,thinking=POLICY['audit_thinking'],tokens=POLICY['audit_tokens'])
+            blocking=audit_issues(audit,candidate,review_pack)
+            if previous and {i['path'] for i in blocking} - {i['path'] for i in previous}:
+                raise ValueError('局部复审指出了范围外字段。')
         except (CallFailure,ValueError,KeyError,TypeError,IndexError) as exc:
             if isinstance(exc,CallFailure) and exc.kind not in {'invalid_output','output_length'}:
                 raise
@@ -245,11 +304,13 @@ def execute(case,folder,progress=lambda stage:None):
             write_json(folder/f'audit-{revision}-contract-error.json',{'error':str(exc),'original_audit':audit})
             try:
                 corrected=call(f'audit_contract_fix_{revision}',
-                    audit_task(pack,candidate,previous)+'\n重新完成上面的审稿。上次意见未通过本地校验或输出不完整。'
+                    review_task+'\n重新完成上面的审稿。上次意见未通过本地校验或输出不完整。'
                     '即使上次意见为空，也要按原材料逐项核对；保留能定位的正确问题。'
                     '\n失败原因：'+str(exc)+'\n原审稿（仅供参考）：'+dump(audit),
-                    AUDIT_SCHEMA,images=names,thinking='disabled',tokens=POLICY['audit_tokens'])
-                blocking=audit_issues(corrected,candidate,pack)
+                    AUDIT_SCHEMA,images=review_images,thinking='disabled',tokens=POLICY['audit_tokens'])
+                blocking=audit_issues(corrected,candidate,review_pack)
+                if previous and {i['path'] for i in blocking} - {i['path'] for i in previous}:
+                    raise ValueError('局部复审指出了范围外字段。')
             except (CallFailure,ValueError,KeyError,TypeError,IndexError) as repair_error:
                 if isinstance(repair_error,CallFailure) and repair_error.kind not in {'invalid_output','output_length'}:
                     raise
@@ -265,10 +326,7 @@ def execute(case,folder,progress=lambda stage:None):
             write_json(folder/'accepted.json',result);return result
         if revision==POLICY['max_revisions']:break
         fields={i['path']:locate(candidate,i['path']) for i in blocking}
-        source_ids={s for i in blocking for s in i['source_ids']}
-        image_refs={m.get('image_observation_ref') for m in pack['messages'] if m['id'] in source_ids}
-        repair_pack={**pack,'messages':[m for m in pack['messages'] if m['id'] in source_ids],
-                     'image_observations':[o for o in observations if o['source_id'] in image_refs]}
+        repair_pack=cited_pack(pack, blocking)
         def verify_patch(value):
             updated=mechanical(apply_patch(candidate,value,blocking),case,ids)
             if digest(updated[0]) in seen:

@@ -62,6 +62,20 @@ class CompactTests(unittest.TestCase):
         self.assertEqual([c.args[3] for c in calls.call_args_list],['compose','audit_0','patch_1','audit_1'])
         self.assertEqual(result['quality']['revisions'],1)
         self.assertNotIn('候选稿：',calls.call_args_list[2].args[0])
+    def test_revision_audit_uses_changed_fields_and_only_their_related_images(self):
+        self.case['messages'][0]['image']='relevant.png'
+        self.case['messages'].append({'id':'M0002','speaker':'乙','text':'无关内容','image':'unrelated.png'})
+        vision={'observations':[{'source_id':sid,'visible_text':'读图','visible_time':'',
+                                'description':'截图','uncertainty':''} for sid in ['S001','S002']]}
+        change={'changes':[{'path':'/reader/verdict','expected_json':json.dumps('仍需核对。'),
+                            'replacement_json':json.dumps('甲自述已支付。')}]}
+        _,calls=self.run_flow(iter([vision,composed(),{'decision':'revise','issues':[issue()]},
+                                    change,{'decision':'pass','issues':[]}]))
+        review=calls.call_args_list[-1]
+        self.assertEqual(review.args[3],'audit_1')
+        self.assertEqual(review.args[4],['relevant.png'])
+        self.assertNotIn('无关内容',review.args[0])
+        self.assertNotIn('候选稿：',review.args[0])
     def test_invented_critique_is_not_paid_rewrite(self):
         bad=issue();bad['evidence'][0]['quote']='not present'
         with patch.object(provider,'generate',side_effect=[(composed(),{}),({'decision':'revise','issues':[bad]}, {}),({'decision':'revise','issues':[bad]}, {})]) as gen:
@@ -77,6 +91,22 @@ class CompactTests(unittest.TestCase):
         pack,_,_=compact.prepare(self.case);broad=issue();broad['path']='/reader'
         with self.assertRaisesRegex(ValueError,'范围过大'):
             compact.audit_issues({'decision':'revise','issues':[broad]},composed(),pack)
+    def test_exact_paragraph_quote_narrows_patch_to_text_and_keeps_evidence(self):
+        pack,_,_=compact.prepare(self.case)
+        draft=composed()
+        path='/reader/chapters/0/paragraphs/0'
+        paragraph=compact.locate(draft,path)
+        review={**issue(),'path':path,'candidate_excerpt':paragraph['text']}
+        blockers=compact.audit_issues({'decision':'revise','issues':[review]},draft,pack)
+        self.assertEqual(blockers[0]['path'],path+'/text')
+        self.assertEqual(blockers[0]['original_path'],path)
+        fix={'changes':[{'path':path+'/text','expected_json':json.dumps(paragraph['text']),
+                         'replacement_json':json.dumps('甲自述已经付款。')}]}
+        self.assertEqual(compact.locate(compact.apply_patch(draft,fix,blockers),path),
+                         {**paragraph,'text':'甲自述已经付款。'})
+        review['candidate_excerpt']='这句不在段落里'
+        with self.assertRaisesRegex(ValueError,'范围过大'):
+            compact.audit_issues({'decision':'revise','issues':[review]},draft,pack)
     def test_suggestions_do_not_block_and_decision_must_match(self):
         pack,_,_=compact.prepare(self.case);suggestion=issue();suggestion['severity']='suggestion'
         self.assertEqual(compact.audit_issues({'decision':'pass','issues':[suggestion]},composed(),pack),[])
