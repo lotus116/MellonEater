@@ -13,7 +13,14 @@ const {chromium}=require(process.env.HOME+'/.cache/codex-runtimes/codex-primary-
  if(!(await page.locator('#task-progress').innerText()).includes('用量未知'))throw Error('uncertain usage hidden');
  await page.reload();await page.locator('[data-resume]').waitFor();await page.locator('[data-resume]').click();
  await page.waitForFunction(()=>document.querySelector('#task-progress').classList.contains('hidden'));
- if(!payload.allow_uncertain||payload.max_requests!==20||payload.job_id!==job.id)throw Error('retry acknowledgement mismatch');
+ if(!payload.allow_uncertain||payload.max_requests!==20||payload.max_total_tokens!==60000||payload.job_id!==job.id)throw Error('retry acknowledgement mismatch');
+ // Deterministic editorial failures expose reasons instead of a paid retry.
+ continued=false;job.status='failed';job.uncertain=false;job.can_resume=false;
+ job.error='有定位的内容审稿仍未通过';job.diagnostics=[{path:'/reader/verdict',problem:'结局与原文冲突',requested_change:'保留未完成状态'}];
+ await page.reload();await page.locator('#task-progress details summary').waitFor();
+ if(await page.locator('[data-resume]').count())throw Error('semantic failure offers blind retry');
+ await page.locator('#task-progress details summary').click();
+ if(!(await page.locator('#task-progress').innerText()).includes('结局与原文冲突'))throw Error('missing concrete diagnostics');
  console.log('PASS: disk-style interrupted progress survives refresh, unknown billing visible, explicit resume preserves limit, completed panel clears; resume mocked, no model calls.');
  await browser.close();
 })().catch(e=>{console.error(e);process.exit(1)});

@@ -107,8 +107,13 @@ def _call_locked(prompt,schema,folder,stage,images,config,media,execute,recover=
             raise CallFailure('上次请求中断，当前阶段是否已计费未知。确认后可仅重试这一步。',kind='interrupted',uncertain=True)
     if policy.get('retry_uncertain'):
         policy.pop('retry_uncertain');write_json(manifest,policy)
+    if policy.get('local_only'):
+        raise CallFailure('仅复验已保存输出：该阶段没有可用缓存，未发出模型请求。',kind='local_recheck')
     for retry in range(3):
         usage=usage_summary(root)
+        token_limit=policy.get('max_total_tokens')
+        if token_limit and usage['input_tokens']+usage['output_tokens']>=token_limit:
+            raise CallFailure('已达到本次已记录 token 阈值；进度已保存，未发出下一请求。',kind='budget')
         if usage['requests']>=limit:
             raise CallFailure(f'已达到本次 {limit} 次请求上限；进度已保存，未继续调用。',kind='budget')
         attempt=cache_dir/f'attempt-{len(list(cache_dir.glob("attempt-*")))+1:04d}'
@@ -117,6 +122,7 @@ def _call_locked(prompt,schema,folder,stage,images,config,media,execute,recover=
         write_json(attempt/'attempt.json',record)
         try:
             value,stats=execute(attempt)
+            if not (attempt/'usage.json').exists():write_json(attempt/'usage.json',stats.get('usage'))
             stats={**stats,'cached':False,'checkpoint':key}
             write_json(cache,{'key':key,'value':value,'checksum':digest(value),'stats':stats})
             write_json(attempt/'attempt.json',{**record,'status':'completed','ended_at':now()})

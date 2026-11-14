@@ -1,0 +1,11 @@
+{
+  "title": "合成小样本：转发通知的时间错位",
+  "question": "结合通知图片讲清活动发生了什么变化、现在是什么状态。",
+  "messages": [
+    {"id":"I1","speaker":"转发者","timestamp":"2026-11-14T09:00:00+08:00","text":"刚翻到场地方的通知，转过来。","image_fixture":true},
+    {"id":"I2","speaker":"参与者","timestamp":"2026-11-14T09:02:00+08:00","text":"我刚才误以为今天已经办完，原来这是改期通知。"},
+    {"id":"I3","speaker":"转发者","timestamp":"2026-11-14T09:04:00+08:00","text":"对，以图上的新活动日期为准。"}
+  ],
+  "synthetic_image_lines": ["VENUE NOTICE - SYNTHETIC TEST", "Issued: 2026-11-13 17:43", "Status: POSTPONED", "New event date: 2026-11-15 09:00", "Booking change: APPROVED"],
+  "expected_private_oracle": ["图内新活动时间11月15日09:00，不是分享时间11月14日09:00", "通知发布于11月13日17:43", "改期获批不等于活动已完成"]
+}

@@ -98,11 +98,20 @@ def deepseek_options():
     return {'thinking':{'type':'enabled'},'reasoning_effort':mode}
 
 
-def generate(prompt, schema, run_dir: Path, stage, images=()):
+def generate(prompt, schema, run_dir: Path, stage, images=(), *, options=None):
     from .checkpoints import call,media_hashes
-    if not status()['available']:raise ValueError('还未配置模型入口，尚未发出请求。')
-    return call(prompt,schema,run_dir,stage,images,config_identity(),media_hashes(images,DATA),
-        lambda attempt:_generate_once(prompt,schema,attempt,stage,images),
+    # Reading an exact cached response does not need a live credential. A new
+    # dispatch still checks availability in _generate_once, after local_only.
+    config=config_identity()
+    if options is not None:
+        if set(options)-{'max_tokens','thinking','image_labels'}:raise ValueError('未知阶段选项。')
+        if not 256<=options.get('max_tokens',6000)<=12000:raise ValueError('阶段输出预算无效。')
+        if options.get('thinking','disabled') not in ['disabled','low','high']:raise ValueError('阶段思考方式无效。')
+        config={**config,'stage_options':options}
+        if config['provider']=='codex' and images:config['codex_image_mapping']=1
+    return call(prompt,schema,run_dir,stage,images,config,media_hashes(images,DATA),
+        lambda attempt:(_generate_once(prompt,schema,attempt,stage,images) if options is None else
+                        _generate_once(prompt,schema,attempt,stage,images,options=options)),
         recover=lambda attempt:recover_response(schema,attempt,stage))
 
 
@@ -122,14 +131,16 @@ def recover_response(schema,attempt,stage):
         'usage':obj.get('usage'),'cost':None,'recovered_response':True,'local_format_repairs':repairs}
 
 
-def _generate_once(prompt, schema, run_dir: Path, stage, images=()):
+def _generate_once(prompt, schema, run_dir: Path, stage, images=(), *, options=None):
     config = status()
     if not config['available']:
         raise ValueError('还未配置模型入口。可以先查看示例报告，或导出分析请求在当前聊天完成。')
-    write_json(run_dir / f'{stage}.request.json', {'prompt': prompt, 'schema': schema, 'images': list(images)})
+    write_json(run_dir / f'{stage}.request.json', {'prompt': prompt, 'schema': schema, 'images': list(images),'options':options})
     started = time.monotonic()
     usage = None
     if config['provider'] == 'codex':
+        if images and options:
+            prompt='附图按传入顺序对应材料编号：'+json.dumps([options.get('image_labels',{}).get(p,p) for p in images],ensure_ascii=False)+'\n'+prompt
         out = run_dir / f'{stage}.response.txt'
         args = [shutil.which('codex'), 'exec', '--skip-git-repo-check', '--ephemeral',
                 '--ignore-user-config', '--sandbox', 'read-only', '--color', 'never', '--json',
@@ -174,6 +185,8 @@ def _generate_once(prompt, schema, run_dir: Path, stage, images=()):
         for path in images:
             img = DATA / 'uploads' / Path(path).name
             mime = 'image/png' if img.suffix == '.png' else 'image/jpeg'
+            if options:
+                content.append({'type':'text','text':'下一张图片对应材料：'+options.get('image_labels',{}).get(path,path)})
             content.append({'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,' + base64.b64encode(img.read_bytes()).decode()}})
         content.append({'type':'text','text':prompt})
         payload = {'max_tokens':12000,'model': config['model'], 'messages': [{'role': 'user', 'content': content if images else prompt}]}
@@ -182,6 +195,12 @@ def _generate_once(prompt, schema, run_dir: Path, stage, images=()):
                 {'type': 'json_schema', 'json_schema': {'name': 'chigua_output', 'strict': True, 'schema': schema}})
         if config['provider'] == 'deepseek':
             payload.update(deepseek_options())
+            if options:
+                mode=options.get('thinking','disabled')
+                payload['thinking']={'type':'disabled' if mode=='disabled' else 'enabled'}
+                if mode!='disabled':payload['reasoning_effort']=mode
+                else:payload.pop('reasoning_effort',None)
+        if options:payload['max_tokens']=options.get('max_tokens',6000)
         req = urllib.request.Request(base+'/chat/completions', data=json.dumps(payload).encode(),
             headers={'Content-Type': 'application/json', 'Authorization': 'Bearer '+os.environ['CHIGUA_API_KEY']})
         try:

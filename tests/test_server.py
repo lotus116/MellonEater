@@ -52,7 +52,7 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(self.request('/api/resume',payload,token=False)[0],403);resume.assert_not_called()
             self.assertEqual(self.request('/api/resume',payload,headers={'Origin':'https://foreign.test'})[0],403);resume.assert_not_called()
             self.assertEqual(self.request('/api/resume',payload)[0],202)
-            resume.assert_called_once_with('syntheticjob',allow_uncertain=True,max_requests=25)
+            resume.assert_called_once_with('syntheticjob',allow_uncertain=True,max_requests=25,max_total_tokens=None,local_only=False)
     def test_failed_job_visible_from_disk_without_model_call(self):
         core.write_json(self.root/'runs'/'stopped'/'job.json',{'id':'stopped','case_id':'synthetic','status':'failed','stage':'B1','error':'模拟中断'})
         with patch.object(pipeline.provider,'generate') as gen:
@@ -62,6 +62,12 @@ class ServerTests(unittest.TestCase):
         payload={'title':'x','text':'x'}
         self.assertEqual(self.request('/api/cases',payload,token=False)[0],403)
         self.assertEqual(self.request('/api/cases',payload,headers={'Origin':'https://example.com'})[0],403)
+    def test_maintenance_is_authenticated_and_does_not_start_analysis(self):
+        with patch.object(server,'reload_worker',return_value={'status':'reloaded'}) as reload,patch.object(pipeline,'start') as start:
+            self.assertEqual(self.request('/api/maintenance/reload',{},token=False)[0],403)
+            reload.assert_not_called()
+            self.assertEqual(self.request('/api/maintenance/reload',{})[0],200)
+            reload.assert_called_once();start.assert_not_called()
     def test_invalid_host_rejected(self):
         self.assertEqual(self.request('/api/config',headers={'Host':'evil.example'})[0],403)
     def test_empty_input_rejected(self):

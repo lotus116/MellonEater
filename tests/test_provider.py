@@ -52,8 +52,48 @@ class ProviderTests(unittest.TestCase):
         self.assertIsNone(fixed['chapters'][0]['paragraphs']);self.assertEqual(fixed['chapters'][0]['image_id'],'')
         self.assertIsNone(value['chapters'][0]['image_id'])
         with self.assertRaises(ValueError):validate_schema(fixed,READER_SCHEMA)
+    def test_stage_options_bind_image_to_id_and_set_real_request_budget(self):
+        from chigua import provider
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);(root/'uploads').mkdir();(root/'uploads'/'a.png').write_bytes(b'synthetic')
+            captured=[]
+            def fake(req,timeout):
+                captured.append(json.loads(req.data))
+                return Response(json.dumps({'choices':[{'finish_reason':'stop','message':{'content':'{}'}}],'usage':{'prompt_tokens':1,'completion_tokens':1}}).encode())
+            with patch.dict(os.environ,{'CHIGUA_PROVIDER':'deepseek','CHIGUA_MODEL':'deepseek-flash','CHIGUA_API_KEY':'test','CHIGUA_BASE_URL':'https://api.deepseek.com'}),patch.object(provider,'DATA',root),patch('urllib.request.urlopen',side_effect=fake):
+                opts={'thinking':'low','max_tokens':4000,'image_labels':{'a.png':'S001'}}
+                generate('json',{'type':'object'},root/'run','audit',['a.png'],options=opts)
+                generate('json',{'type':'object'},root/'run','audit',['a.png'],options=opts)
+                generate('json',{'type':'object'},root/'run','audit',['a.png'],options={**opts,'thinking':'disabled'})
+            self.assertEqual(len(captured),2)
+            self.assertEqual(captured[0]['max_tokens'],4000);self.assertEqual(captured[0]['reasoning_effort'],'low')
+            self.assertIn('S001',captured[0]['messages'][0]['content'][0]['text'])
+            self.assertEqual(captured[1]['thinking'],{'type':'disabled'})
     def test_blank_is_failure(self):
         with self.assertRaisesRegex(RuntimeError,'空内容'):self.call('   ')
+    def test_compatible_api_does_not_receive_deepseek_specific_options(self):
+        from chigua import provider
+        with tempfile.TemporaryDirectory() as folder,patch.dict(os.environ,{'CHIGUA_PROVIDER':'api','CHIGUA_MODEL':'synthetic','CHIGUA_API_KEY':'test','CHIGUA_BASE_URL':'https://example.test/v1'}):
+            captured=[]
+            def fake(req,timeout):
+                captured.append(json.loads(req.data))
+                return Response(json.dumps({'choices':[{'finish_reason':'stop','message':{'content':'{}'}}]}).encode())
+            with patch('urllib.request.urlopen',side_effect=fake):
+                generate('JSON',{'type':'object'},Path(folder),'audit',options={'thinking':'low','max_tokens':4000})
+            self.assertEqual(captured[0]['max_tokens'],4000)
+            self.assertNotIn('thinking',captured[0]);self.assertNotIn('reasoning_effort',captured[0])
+            self.assertEqual(captured[0]['response_format']['type'],'json_schema')
+    def test_codex_image_sources_are_named_in_attachment_order(self):
+        from chigua import provider
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);(root/'uploads').mkdir();(root/'uploads/a.png').write_bytes(b'synthetic')
+            captured=[]
+            def fake(args,**kwargs):
+                captured.append(kwargs['input']);Path(args[args.index('-o')+1]).write_text('{}')
+                return SimpleNamespace(returncode=0)
+            with patch.dict(os.environ,{'CHIGUA_PROVIDER':'codex'}),patch.object(provider,'DATA',root),patch('chigua.provider.shutil.which',return_value='/synthetic/codex'),patch('chigua.provider.subprocess.run',side_effect=fake):
+                generate('JSON',{'type':'object'},root/'run','vision',['a.png'],options={'image_labels':{'a.png':'S003'}})
+            self.assertIn('传入顺序对应材料编号：["S003"]',captured[0])
     def test_truncated_is_failure(self):
         with self.assertRaisesRegex(RuntimeError,'上限'):self.call('{"ok":','length')
     def test_fences_allowed_but_garbage_not_silently_salvaged(self):

@@ -245,9 +245,14 @@ class Handler(BaseHTTPRequestHandler):
                 case=pipeline.load_case(safe_id(obj['case_id']))
                 if obj.get('identity'):
                     case['identity']=str(obj['identity'])[:200]
-                return self.send(pipeline.start(case,obj.get('method','B1'),force=obj.get('force') is True,max_requests=obj.get('max_requests',20)),202)
+                return self.send(pipeline.start(case,obj.get('method','B1'),force=obj.get('force') is True,max_requests=obj.get('max_requests',20),max_total_tokens=obj.get('max_total_tokens',60000)),202)
+            if path=='/api/maintenance/reload':
+                return self.send(reload_worker())
+            if path=='/api/evaluations/false-completion':
+                from .evaluation import false_completion
+                return self.send(false_completion(safe_id(obj.get('run_id'))))
             if path=='/api/resume':
-                return self.send(pipeline.resume(safe_id(obj['job_id']),allow_uncertain=obj.get('allow_uncertain') is True,max_requests=obj.get('max_requests')),202)
+                return self.send(pipeline.resume(safe_id(obj['job_id']),allow_uncertain=obj.get('allow_uncertain') is True,max_requests=obj.get('max_requests'),max_total_tokens=obj.get('max_total_tokens'),local_only=obj.get('local_only') is True),202)
             if path=='/api/import-result':
                 case=pipeline.load_case(safe_id(obj['case_id']))
                 return self.send(pipeline.import_result(case,obj['report'],'用户导入分析结果'))
@@ -282,6 +287,25 @@ class Handler(BaseHTTPRequestHandler):
             self.send({'error':str(e)},403)
         except Exception as e:
             self.send({'error':str(e)},400)
+
+
+def reload_worker():
+    """Authenticated local maintenance; never exports credentials or starts work."""
+    import importlib
+    import fcntl
+    if any(j['status']=='running' for j in pipeline.JOBS.values()):raise ValueError('任务运行时不能更新流程。')
+    fd=pipeline.worker_lock()
+    try:
+        for name in ['core','checkpoints','provider','editor','compact','pipeline','evaluation']:
+            importlib.reload(importlib.import_module('chigua.'+name))
+        import sys
+        # Keep the live handler's existing guard/token. Refresh its POST routes
+        # so later maintenance does not require exporting an in-memory key.
+        owner=sys.modules.get('__main__')
+        if owner and getattr(owner,'Handler',None) and owner.Handler.__module__=='__main__':
+            owner.Handler.do_POST=importlib.reload(importlib.import_module('chigua.server')).Handler.do_POST
+        return {'workflow':pipeline.compact.VERSION,'status':'reloaded','model_requests':0}
+    finally:fcntl.flock(fd,fcntl.LOCK_UN);os.close(fd)
 
 
 def main():

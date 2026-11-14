@@ -10,6 +10,7 @@ from . import provider
 from .editor import edit_report, VERSION as EDITOR_VERSION
 from .core import RULES, READER_RULES
 from .checkpoints import digest, media_hashes, usage_summary, CallFailure
+from . import compact
 
 JOBS = {}
 LOCK = threading.Lock()
@@ -28,8 +29,15 @@ def save_case(case):
 WORKFLOW_VERSION='resumable-v1'
 
 
-def signature(case,method):
+def selected_workflow(method,workflow=None):
+    return workflow or (os.getenv('CHIGUA_WORKFLOW') or compact.VERSION if method=='B1' else WORKFLOW_VERSION)
+
+
+def signature(case,method,workflow=None):
     images=list(dict.fromkeys(m['image'] for m in case['messages'] if m.get('image')))
+    if selected_workflow(method,workflow)==compact.VERSION:
+        return digest({'case':case,'method':method,'media':media_hashes(images,DATA),
+            'config':provider.config_identity(),'workflow':compact.VERSION,'rules':compact.RULES,'policy':compact.POLICY})
     return digest({'case':case,'method':method,'media':media_hashes(images,DATA),
         'config':provider.config_identity(),'workflow':WORKFLOW_VERSION,'editor':EDITOR_VERSION,
         'rules':RULES,'reader_rules':READER_RULES})
@@ -53,6 +61,14 @@ def get_job(jid):
     if (folder/'result.json').exists():job.update(status='completed',result=json.loads((folder/'result.json').read_text()))
     job['usage']=usage_summary(folder)
     job['cached_steps']=sum(1 for _ in folder.rglob('completed.json'))
+    if job.get('status')=='failed' and '两轮返修后仍未通过' in job.get('error',''):
+        job['error_kind']='editorial_exhausted'
+        check=folder/'editorial/checks.json'
+        if check.exists():
+            history=json.loads(check.read_text())
+            if history:
+                last=history[-1];job['diagnostics']=(last.get('review') or {}).get('issues',[])+[{'problem':x} for x in last.get('issues',[])]
+    job['can_resume']=job.get('error_kind') not in ['editorial_exhausted','review_invalid','structure','visual_mapping','workflow_changed','cache','output_length']
     return job
 
 
@@ -80,6 +96,19 @@ def run_pipeline(jid, case, method):
     folder.mkdir(parents=True, exist_ok=True,mode=0o700)
     if not (folder/'input.json').exists():write_json(folder / 'input.json', case)
     try:
+        if job.get('workflow','').startswith('compact-') and job['workflow']!=compact.VERSION:
+            raise CallFailure('流程版本已更新，旧任务不混用新步骤；原结果保留，未发出请求。',kind='workflow_changed')
+        if job.get('workflow')==compact.VERSION:
+            def progress(stage):
+                job.update(stage=stage,phase='editing',step=0,total=0);persist(job)
+            edition=compact.execute(case,folder/'editorial',progress)
+            run={'id':jid,'case_id':case['id'],'method':method,'created_at':now(),
+                'origin':'live_model','input_hash':case['input_hash'],'identity':case.get('identity','旁观者'),
+                'report':edition['report'],'checks':validate_report(edition['report'],case['messages']),
+                'trace':[],'editorial_trace':edition['trace'],'editorial_quality':edition['quality'],
+                'editorial_workflow':edition['workflow_version'],'status':'completed','usage':usage_summary(folder)}
+            write_json(folder/'result.json',run)
+            job.update(status='completed',result=run,error='',uncertain=False);persist(job);return
         plan = [('discover', DISCOVERY_SCHEMA), ('evidence', REPORT_SCHEMA), ('assess', REPORT_SCHEMA), ('review', REPORT_SCHEMA)]
         if method in ['B0', 'B1']:
             plan = [(method, REPORT_SCHEMA)]
@@ -114,6 +143,7 @@ def run_pipeline(jid, case, method):
         job.update(status='completed', result=run,error='',uncertain=False)
     except Exception as exc:
         job.update(status='failed', error=str(exc),error_kind=getattr(exc,'kind','validation'),uncertain=getattr(exc,'uncertain',False))
+        if getattr(exc,'diagnostics',None):job['diagnostics']=exc.diagnostics
         failure={k:v for k,v in job.items() if k != 'result'}
         write_json(folder/'failures'/(uuid.uuid4().hex+'.json'),failure)
         write_json(folder / 'failure.json',failure)
@@ -131,10 +161,12 @@ def _launch(job,case,method,background):
     return get_job(job['id'])
 
 
-def start(case, method='B1', *, force=False, max_requests=20, background=True):
+def start(case, method='B1', *, force=False, max_requests=20, background=True,workflow=None,max_total_tokens=60000):
     if method not in ['B0', 'B1', 'B2', 'A1']:raise ValueError('未知分析方法。')
     if not isinstance(max_requests,int) or not 4<=max_requests<=100:raise ValueError('请求上限应为 4 至 100 次。')
-    key=signature(case,method)
+    workflow=selected_workflow(method,workflow)
+    if not isinstance(max_total_tokens,int) or not 1000<=max_total_tokens<=1000000:raise ValueError('token 阈值应为 1,000 至 1,000,000。')
+    key=signature(case,method,workflow)
     with LOCK:
         if not force:
             for p in sorted((DATA/'runs').glob('*/manifest.json'),key=lambda p:p.stat().st_mtime,reverse=True):
@@ -145,33 +177,39 @@ def start(case, method='B1', *, force=False, max_requests=20, background=True):
         jid=uuid.uuid4().hex;folder=DATA/'runs'/jid
         write_json(folder/'input.json',case)
         write_json(folder/'manifest.json',{'signature':key,'method':method,'config':provider.config_identity(),
-            'max_requests':max_requests,'created_at':now(),'workflow':WORKFLOW_VERSION})
+            'max_requests':max_requests,'max_total_tokens':max_total_tokens,'created_at':now(),'workflow':workflow})
         job={'id':jid,'case_id':case['id'],'status':'running','stage':'queued','step':0,
-             'total':1 if method in ['B0','B1'] else 4,'created_at':now(),'max_requests':max_requests,'method':method}
+             'total':1 if method in ['B0','B1'] else 4,'created_at':now(),'max_requests':max_requests,'method':method,'workflow':workflow,'max_total_tokens':max_total_tokens}
         return _launch(job,case,method,background)
 
 
-def resume(jid,*,allow_uncertain=False,max_requests=None,background=True):
+def resume(jid,*,allow_uncertain=False,max_requests=None,max_total_tokens=None,background=True,local_only=False):
     with LOCK:
         job=get_job(jid)
         if job['status'] in ['completed','running']:return job
+        if job.get('error_kind') in ['editorial_exhausted','review_invalid','structure','visual_mapping','workflow_changed'] and not local_only:
+            raise ValueError('这次失败需要修正具体问题，原样续跑不会改善，已停止追加调用。请查看问题详情；新版流程须明确新建任务。')
         if job.get('error_kind') in ['cache','output_length']:
             raise ValueError('该问题需要先修复缓存或输出长度设置，原样继续可能重复失败；已停止追加请求。')
         if any(j['status']=='running' for j in JOBS.values()):raise ValueError('已有分析正在运行，请等待完成后再继续。')
         folder=DATA/'runs'/jid
         if not (folder/'manifest.json').exists():raise ValueError('旧版本任务没有可靠检查点，请新建分析；原记录保留。')
         manifest=json.loads((folder/'manifest.json').read_text());case=json.loads((folder/'input.json').read_text())
-        if signature(case,manifest['method'])!=manifest['signature']:
+        if signature(case,manifest['method'],manifest.get('workflow',WORKFLOW_VERSION))!=manifest['signature']:
             raise ValueError('模型、材料或流程规则已改变。为避免混用结果，请恢复原设置，或明确新建分析。')
-        if not provider.status()['available']:raise ValueError('请先配置原模型入口，密钥可以重新填写。')
+        if not local_only and not provider.status()['available']:raise ValueError('请先配置原模型入口，密钥可以重新填写。')
         if job.get('uncertain') and not allow_uncertain:
             raise ValueError('中断的请求可能已计费。请确认仅重试未完成阶段。')
         if max_requests is not None:
             if not isinstance(max_requests,int) or not manifest['max_requests']<=max_requests<=100:
                 raise ValueError('继续时只能明确提高请求上限，最多 100 次。')
             manifest['max_requests']=max_requests
-        manifest['retry_uncertain']=allow_uncertain;write_json(folder/'manifest.json',manifest)
-        job.update(status='running',error='',uncertain=False,max_requests=manifest['max_requests'])
+        if max_total_tokens is not None:
+            if not isinstance(max_total_tokens,int) or not manifest.get('max_total_tokens',1000)<=max_total_tokens<=1000000:
+                raise ValueError('继续时只能明确提高已记录 token 阈值，最多 1,000,000。')
+            manifest['max_total_tokens']=max_total_tokens
+        manifest['retry_uncertain']=allow_uncertain;manifest['local_only']=local_only;write_json(folder/'manifest.json',manifest)
+        job.update(status='running',error='',uncertain=False,max_requests=manifest['max_requests'],max_total_tokens=manifest.get('max_total_tokens'))
         return _launch(job,case,manifest['method'],background)
 
 

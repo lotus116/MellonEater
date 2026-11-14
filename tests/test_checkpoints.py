@@ -7,7 +7,7 @@ from test_provider import Response
 from test_core import valid_report
 from test_editor import candidate,plan,review
 
-ENV={'CHIGUA_PROVIDER':'deepseek','CHIGUA_MODEL':'synthetic-model','CHIGUA_BASE_URL':'https://example.test/v1','CHIGUA_API_KEY':'private-test-key'}
+ENV={'CHIGUA_PROVIDER':'deepseek','CHIGUA_MODEL':'synthetic-model','CHIGUA_BASE_URL':'https://example.test/v1','CHIGUA_API_KEY':'private-test-key','CHIGUA_WORKFLOW':'resumable-v1'}
 STATS={'provider':'deepseek','model':'synthetic-model','seconds':1,'usage':{'prompt_tokens':10,'completion_tokens':5},'cost':None}
 
 class CheckpointTests(unittest.TestCase):
@@ -51,6 +51,19 @@ class CheckpointTests(unittest.TestCase):
             with self.assertRaisesRegex(CallFailure,'请求上限'):self.generate()
         with patch.object(provider,'_generate_once') as gen:
             with self.assertRaisesRegex(CallFailure,'请求上限'):self.generate()
+            gen.assert_not_called()
+    def test_recorded_token_threshold_stops_next_call_but_allows_cache(self):
+        core.write_json(self.folder/'manifest.json',{'max_requests':10,'max_total_tokens':15})
+        with patch.object(provider,'_generate_once',return_value=({},STATS)) as gen:
+            self.generate();self.generate()
+            with self.assertRaisesRegex(CallFailure,'token 阈值'):self.generate('different')
+            self.assertEqual(gen.call_count,1)
+    def test_local_only_recheck_never_dispatches_missing_stage(self):
+        with patch.object(provider,'_generate_once',return_value=({},STATS)):self.generate()
+        core.write_json(self.folder/'manifest.json',{'local_only':True})
+        with patch.object(provider,'_generate_once') as gen:
+            self.generate()
+            with self.assertRaisesRegex(CallFailure,'未发出模型请求'):self.generate('missing')
             gen.assert_not_called()
     def test_corrupted_cache_stops_without_paid_request(self):
         with patch.object(provider,'_generate_once',return_value=({},STATS)):self.generate()
@@ -152,6 +165,21 @@ class CheckpointTests(unittest.TestCase):
             with patch.dict(os.environ,{'CHIGUA_API_KEY':'replacement-key'}):self.generate()
             self.assertEqual(gen.call_count,1)
         for p in self.folder.rglob('*.json'):self.assertNotIn('replacement-key',p.read_text())
+    def test_cache_replay_does_not_require_api_secret(self):
+        with patch.object(provider,'_generate_once',return_value=({},STATS)) as gen:
+            self.generate()
+            with patch.dict(os.environ,{'CHIGUA_API_KEY':''}):self.generate()
+            self.assertEqual(gen.call_count,1)
+    def test_resume_token_threshold_can_only_increase_explicitly(self):
+        case={'id':'synthetic','messages':[],'input_hash':'test'}
+        with patch.object(provider,'_generate_once',side_effect=CallFailure('temporary failure')):
+            j=pipeline.start(case,'B1',max_total_tokens=1000,background=False)
+        with patch.object(pipeline,'_launch',return_value={'status':'stub'}) as launch:
+            with self.assertRaisesRegex(ValueError,'只能明确提高'):
+                pipeline.resume(j['id'],max_total_tokens=999,background=False)
+            launch.assert_not_called()
+            pipeline.resume(j['id'],max_total_tokens=2000,background=False)
+            self.assertEqual(json.loads((self.root/'runs'/j['id']/'manifest.json').read_text())['max_total_tokens'],2000)
     def test_api_http_retry_classification_and_limit(self):
         import urllib.error
         for code,expected in [(429,3),(503,3),(400,1),(401,1),(402,1),(504,1)]:

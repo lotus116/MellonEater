@@ -53,7 +53,7 @@ def verify(run_id, recover_raw=False):
         core.write_json(target / 'job.json', job)
         recovered_attempt = None
         if recover_raw:
-            cache = next(target.glob('.calls/*/completed.json'))
+            cache = next(target.rglob('completed.json'))
             recovered_attempt = sorted(cache.parent.glob('attempt-*/attempt.json'))[-1]
             assert (recovered_attempt.parent / 'raw-response.json').is_file()
             attempt = json.loads(recovered_attempt.read_text())
