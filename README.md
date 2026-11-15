@@ -1,123 +1,45 @@
-# MellonEater · 知瓜
+<h1 align="center">MellonEater · 知瓜</h1>
 
-把聊天里的事件、各方说法、证据和未知项放在一起，生成可以回查原文的争议分析报告。
+<p align="center">把聊天记录整理成一份讲清前因后果、点得回原文的报告。</p>
 
-当前为 **macOS 本地 MVP**：上传、粘贴或本地导入微信原生 ZIP → 本地规范化与截图 OCR → Codex / DeepSeek 新报告 → 原文审稿 → 必要的局部返修 → 证据工作台 / HTML / PDF。微信 ZIP 导入已通过合成与本机导入验证；数据库自动采集仍待本机兼容性验证。
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#怎样导入微信记录">微信导入</a> ·
+  <a href="docs/RESUMABLE_READING.md">工作流与用量</a>
+</p>
 
-## 启动
+<p align="center">
+  <img src="docs/images/report-preview.webp" alt="知瓜的网页版报告，展示事件转折、阶段筛选与原文引用" width="680">
+</p>
 
-在 Mac 上双击 `start.command`，浏览器打开 `http://127.0.0.1:8765`。关闭终端会停止服务。
+*网页版报告预览，使用仓库中的[虚构展览案例](data/samples/compact-prehistory.json)。*
 
-脚本优先使用本机 Codex 随附的 Python；其他环境可以：
+## 知瓜能做什么
 
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -e '.[pdf]'
-.venv/bin/python -m chigua.server
-```
+- **看懂经过** — 从聊天里提取前情、关键转折与现状，用互动时间线串起来。
+- **回查原文** — 点引用编号查看消息和截图。把各方说法、行为判断和待确认的事项放在同一份报告里。
+- **继续分析与导出** — 保存已完成步骤，按任务进度恢复。报告可导出为独立 HTML，也可在浏览器打印为 PDF。
 
-核心服务只使用 Python 标准库；PDF 导出需要 ReportLab 和可用的中文字体。当前 Mac 使用宋体正文、黑体标题与说明、粗宋体引文，并把使用的字形嵌入 PDF；字体文件不随仓库分发。缺失时回退到 Arial Unicode，Windows 字体适配待完成。
+## 快速开始
 
-首次启动无本地案例时会载入一个**明确标注的合成案例**。真实记录、截图、运行结果和密钥均被 Git 忽略，不随仓库分发。
-
-## 使用
-
-微信原生 ZIP：在微信中手动多选 → 合并转发 → 其他应用 → 通过 [Dukou](https://github.com/qzz0518/Dukou)「暂存到渡口」保存到本机，再在工作台左侧点击「导入微信 ZIP」，选择压缩包、填写群名和起止日期，点击「导入并查看材料」。无需解压。原来的「导入聊天记录」窗口中也有 ZIP 入口。不要选直接发送给模型的入口。网页会预填本机已保存的群名和日期，导入前仍可修改。每次 ZIP 总大小不超过 256 MB。终端入口 `import-wechat.command` 仍可用；新环境命令行使用下面的显式参数。导入不会自动调用模型，不需要微信数据库权限。当前只解析已核对的中文 TXT 格式；分批 ZIP 可一起导入，图片只按同批次文件引用关联，手动选择范围不代表完整历史。详见 [Mac 接入与路线比较](docs/MAC_ACCESS.md)。
-
-```sh
-python3 -m pip install -e '.[wechat]'
-python3 scripts/import-wechat-zip.py '/本地/聊天记录.zip' \
-  --group '所选群名' --start '2026-11-01T00:00:00+08:00' \
-  --end '2026-11-01T23:59:59+08:00'
-```
-
-1. 点击“导入聊天记录”。可粘贴 `【甲】：……` 格式文字，导入 TXT、JSON、JSONL，或上传 PNG/JPEG。
-2. 检查“全部材料”。程序保留材料编号、来源、图片和未知时间，不把段落当成原始微信消息。
-3. 在“模型与接入设置”中选择入口，点击“生成分析报告”。所有方法均自动完成阅读稿编辑；页面显示主线提炼、审稿和返修进度。
-4. 点击材料编号查看原文；“证据清单”按支持状态筛选；“运行记录”保留不同方法的结果。
-5. 导出 PDF、含内嵌图片的独立 HTML 或 JSON。新报告先展示事件主线与阶段转折，再展开故事、解释支线作用，最后给出判断和待解问题；时间顺序的依据单独标记，完整判断清单与原图留在工作台。
-
-标准阅读 B1 先区分单一事件、并行事件和残缺片段，一次写出分析和阅读稿，再用独立请求对照原文审稿。纯文字无返修通常共 2 次；有图先按每批最多 4 张识别并缓存。审稿需要具体字段、原句和原文依据，用词建议不触发重写。确有问题时只做一轮有依据的局部修改，再复核一次。仍有疑问时生成报告，在页首写明复核局限。
-
-打开「网页版报告」，先读起因与现状，再沿关键转折查看经过。点引用编号可核对原文和图片。「打印 / 存为 PDF」会展开正文与引用原文，使用浏览器存档。步骤与费用边界见 [可恢复的生成与交互阅读](docs/RESUMABLE_READING.md)。
-
-编辑规则由程序与 [项目 skill](skills/chigua-analysis/SKILL.md) 共用。旧报告也可以运行 `python scripts/reader-edition.py <run_id>` 自动重编；成功后才替换阅读版，原始分析和旧版留档。
-
-## 模型切换
-
-### Codex
-
-先在本机完成 `codex login`。默认复用登录状态，不读取或复制登录凭据。程序通过 `codex exec` 使用只读执行模式、新上下文和结构化输出；不允许分析流程通过材料中的指令调用工具。各次模型输出和调用记录留存在 `data/runs/`。
-
-### DeepSeek
-
-可在页面中填写接口、模型、密钥；设置仅保留到服务重启。也可复制 `.env.example` 为 `.env`：
-
-```dotenv
-CHIGUA_PROVIDER=deepseek
-CHIGUA_BASE_URL=https://api.deepseek.com
-CHIGUA_MODEL=deepseek-flash
-CHIGUA_API_KEY=填入自己的密钥
-```
-
-DeepSeek 使用 `json_object`，其他兼容接口默认使用 JSON Schema。空输出、截断输出和无效引用会作为失败记录，不会伪装成完成。支持按所选模型能力传入原图；换用不支持视觉的模型时需先改为纯文字材料。
-
-DeepSeek 默认「快速（关闭深度思考）」，保留分步成稿和审稿。开启低/高强度思考会额外消耗同一输出预算，可能先耗尽单步 12,000 token 上限；设置变化会隔离旧缓存。实际请求、故障续跑与零请求恢复验证见 [DeepSeek 验证记录](docs/DEEPSEEK_LIVE_VALIDATION-2026-11-14.md)。
-
-材料保存在本机，但使用云端模型时，**当前案例的文字与图片会发送给相应模型服务**。接口密钥不会写入报告、实验请求文件或 Git。
-
-## 截图识别
-
-Mac 本地 OCR 使用 Apple Vision，需安装 Xcode Command Line Tools：
+当前以 **macOS** 为主。下载仓库后双击 `start.command`，也可以在终端用下面的命令启动。
 
 ```sh
-mkdir -p tmp
-swiftc scripts/ocr.swift -o tmp/ocr -module-cache-path tmp/swift-cache
+git clone https://github.com/lotus116/MellonEater.git
+cd MellonEater
+./start.command
 ```
 
-OCR 不联网，保留原图、识别文字、坐标和置信度。识别失败时明确标注，并保留图片；不能当作没有信息。截图中的发言者与时间仍需要结合原图分析。
+1. 打开 [本地工作台](http://127.0.0.1:8765)。首次启动可以先选内置的合成案例，也可以导入 TXT、JSON、JSONL、截图或微信 ZIP。
+2. 在「模型与接入设置」中选择已登录的 Codex，或填写 DeepSeek 的模型和密钥。也可以在本机使用 [`.env.example`](.env.example) 配置模型。
+3. 核对材料后点击「生成分析报告」。在「网页版报告」里可展开时间线、跳转原文，也可打印或存为 PDF。
 
-## 数据与可复现运行
+## 怎样导入微信记录
 
-Mac 自动采集已准备好 GreenBubbles 完整 JSON 的受限适配器，**尚未在本机真实数据库上验证**。它只接收精确群 ID 和明确时间窗口，分页结果先保存本地，不自动调用模型。首次获取数据库访问能力涉及微信签名和登录状态变更，demo 不执行这一步。入口与限制见 [Mac 接入调研](docs/MAC_ACCESS.md)。
+在 Mac 微信打开合并聊天记录，滚动加载需要的图片。通过「转发 → 其他应用」交给 [Dukou](https://github.com/qzz0518/Dukou) 暂存为 ZIP。回到知瓜，点击「导入微信 ZIP」，选择文件、填写群名和起止日期，再预览文字与图片的对应关系。[详细导入说明](docs/MAC_ACCESS.md)
 
-- `data/cases/`：不可变的输入材料包。
-- `data/uploads/`：上传原图。
-- `data/runs/<id>/`：输入快照、提示、模型结果、耗时、用量和失败记录。
-- `data/runs/<id>/result.json`：当前完成报告；`editorial/` 保存新稿、审稿、返修与排版检查。旧版另有 `analysis_report.json` 原始分析，不能与新版直接混为同一实验条件。
-- `data/samples/demo.json`：仓库自带的合成样例。
-- `skills/chigua-analysis/`：可复用的分析操作说明。
+> 案例、原图、运行记录与密钥保存在本机并由 Git 忽略。选择云端模型并启动分析时，用于本次分析的文字和图片会发送给相应的服务商。
 
-```sh
-python3 -m chigua.cli seed-demo
-python3 -m chigua.cli analyze syntheticdemo --provider codex --method B2
-python3 -m chigua.cli export syntheticdemo --format pdf --output output/demo.pdf
-python3 -m unittest discover -s tests -v
-```
+## 项目文档
 
-JSON 可使用 `{"messages":[{"id":"M1","speaker":"甲","text":"原文","timestamp":null,"children":[]}]}`。`children` 保存合并转发内部材料，`parent_id` 关联外层，`source_root` 只在有依据时填写。同样的文字不会被自动当作独立佐证，也不会仅凭内容相同就删除。
-
-## 当前边界
-
-- 已有 B0 普通提示、B1 详细提示、B2 证据工作流、A1 自由笔记流程的运行入口。
-- A1 是机制检查的初步实现，正式实验仍需固定各阶段预算和评分规则。
-- 引用校验只验证编号和结构；不证明事实正确、归责合理或模型客观。
-- 当前材料量上限为 2000 单元 / 15 万字符，未实现超长群聊的分批检索与跨批事件合并。
-- 没有稳定的 Mac / Windows 微信自动历史采集；没有语音、视频转写或外网调查。
-- 没有完成 20 个真实案例、独立标注及留出集实验；demo 不是研究结果。
-
-实施范围和接入路线见 [计划](docs/PLAN.md) 与 [Mac 接入调研](docs/MAC_ACCESS.md)。
-
-小规模行为检查可先运行 `python scripts/prepare-variants.py`，再运行 `python scripts/run-smoke.py --provider codex --method B1`。该操作会运行四个案例，每例包括分析与自动编辑；预期行为和输出索引保存于被忽略的 `data/private/`，不把预期答案传给模型。自动编辑跨案例检查运行 `python scripts/eval-editorial.py --provider codex`，使用三份完全虚构的新材料，结果和 PDF 仅留本地。验证记录见 [验收说明](docs/VALIDATION.md)。
-
-## Codex 启动失败
-
-若提示「Codex 启动被系统权限阻止」，表示本地服务的运行权限阻止了 Codex 初始化，不能据此认定登录失效。停止旧服务后，从 Finder 双击 `start.command` 在普通终端中启动，再刷新网页重试；无需重新导入材料。不要把由受限开发工具启动的 HTTP 服务能打开页面，当成模型调用也已验证。模型分析仍使用只读模式，禁用额外执行工具。
-
-登录失效、使用限额、网络连接失败、单阶段十分钟超时会分别显示提示。未知错误保留本机运行记录，不把原始错误日志或聊天内容直接显示到提示中。
-
-## 可恢复生成与网页版报告
-
-默认「标准阅读」纯文字通常 2 次调用，图片另按批次读取，保留原文审稿；深入核对通常 7 次。每个完成步骤保存到本机，失败或重启后可继续；重复点击默认复用原任务。请求次数上限、已记录 token 阈值与计费未知请求会显示在页面中。达到阈值后停止下一请求，在途请求仍可能超过阈值。超时不会被静默反复重发。
-
-报告页新增「打开网页版报告」：支持折叠阶段与正文、人物角色、争议与反证、原文搜索、引用跳转和图片放大。独立 HTML 可离线保存，交互及 PDF 导出不调用模型。配置与边界见 [可恢复生成与交互阅读](docs/RESUMABLE_READING.md)。
+[生成、续跑与导出](docs/RESUMABLE_READING.md) · [分析规则与 Skill](skills/chigua-analysis/SKILL.md) · [验证记录](docs/VALIDATION.md) · [项目计划](docs/PLAN.md)
