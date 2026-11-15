@@ -150,3 +150,47 @@ class EvidenceFirstTests(unittest.TestCase):
         self.assertEqual([e['source_ids'] for e in bound['events']],[['S002']])
         self.assertEqual(bound['events'][0]['actor'],'负责人')
         self.assertTrue(bound['findings'])
+
+    def test_recovery_keeps_the_literal_action_with_its_own_scene_and_clock(self):
+        pack = {'messages':[
+            {'id':'S001','speaker':'P1','speaker_label':'协调人','text':'转发图','image_observation_ref':'S001'},
+            {'id':'S002','speaker':'P2','speaker_label':'负责人','text':'转发图','image_observation_ref':'S002'},
+            {'id':'S003','speaker':'P2','speaker_label':'负责人','text':'我们解释了原因。'},
+        ],'image_observations':[
+            {'source_id':'S001','description':'群聊“工作群”界面','visible_time':'19:00；昨天 16:21；昨天 16:43',
+             'visible_text':'19:00\n工作群\n昨天 16:21\n负责人\n先道歉再谈。\n昨天 16:43\n另一条消息'},
+            {'source_id':'S002','description':'对话截图','alternate_description':'私聊续页并带顶部群通知浮层',
+             'visible_time':'19:00','visible_text':'19:00\n我凭什么要给你道歉？\n我在开玩笑。'},
+        ]}
+        demand = event('原始言行','S001','先道歉再谈。',actor='P2',actor_quote='负责人',scene='小群',
+                       medium='image',time_origin='图内时间',time_quote='昨天 16:43')
+        question = event('事后解释','S002','我凭什么要给你道歉？',medium='image',scene='私聊')
+        reply = event('事后解释','S002','我在开玩笑。',medium='image',scene='私聊',actor='')
+        wrong_source = event('事后解释','S003','我们解释了原因。')
+        targets = {'原始言行':['S001'],'事后解释':['S002']}
+        selected = compact.select_recovery_binding(ledger([question,wrong_source]),[ledger([reply,demand])],targets,pack)
+        checked = evidence_first.build(selected,pack,verify_turns=True)
+        rows = evidence_first.publication_ledger(checked,pack)['events']
+        self.assertEqual([(row['kind'],row['actor'],row['scene'],row['time']) for row in rows],[
+            ('原始言行','负责人','小群','昨天 16:21（图内）'),('事后解释','说话者待确认','私聊',''),
+        ])
+        self.assertIn('质问',rows[1]['action'])
+        self.assertEqual(rows[1]['order_basis'],'相对顺序可确认')
+        self.assertIn('先后仍待确认',rows[1]['impact'])
+
+    def test_recap_preserves_who_responded_without_importing_export_time(self):
+        pack = {'messages':[
+            {'id':'S001','speaker':'P1','speaker_label':'协调人','text':'我看到那句以后就不想忍了。'},
+            {'id':'S002','speaker':'P1','speaker_label':'协调人','text':'所以我在大群发了经过。',
+             'message_time':'2026-04-10T17:52:00+08:00'},
+            {'id':'S003','speaker':'P1','speaker_label':'协调人','text':'她要我撤回，我又回了句你也先认错。'},
+        ]}
+        disclosure = event('公开披露','S002',pack['messages'][1]['text'],scene='公开群',scene_quote='大群',
+                           mode='后来回述',actor_quote='我',time_origin='消息时间',time_quote='2026-04-10T17:52:00+08:00')
+        response = event('回击','S003',pack['messages'][2]['text'],scene='私聊',mode='后来回述',actor_quote='我')
+        checked = evidence_first.build(ledger([disclosure,response]),pack,verify_turns=True)
+        rows = evidence_first.publication_ledger(checked,pack)['events']
+        self.assertEqual(rows[0]['source_ids'],['S002','S001'])
+        self.assertEqual(rows[0]['time'],'')
+        self.assertEqual(rows[1]['actor'],'协调人')
+        self.assertEqual(rows[1]['title'],'回击（场景待确认）')

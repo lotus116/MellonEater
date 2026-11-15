@@ -24,7 +24,7 @@ def snapshot(folder):
             for p in folder.rglob('*') if p.is_file()}
 
 
-def verify(run_id, recover_raw=False):
+def verify(run_id, recover_raw=False, export_html=None):
     if not run_id.isalnum():
         raise ValueError('Invalid run ID')
     original = core.DATA / 'runs' / run_id
@@ -33,6 +33,10 @@ def verify(run_id, recover_raw=False):
     assert result['status'] == 'completed'
     before = snapshot(original)
     original_usage = usage_summary(original)
+    manifest = json.loads((original/'manifest.json').read_text())
+    recovery = manifest.get('binding_recovery') or {}
+    dependencies = {manifest.get('reuse_vision_from'),recovery.get('run'),
+                    recovery.get('review_from'),recovery.get('visual_from')} - {None,run_id}
     env = {'CHIGUA_PROVIDER': 'manual', 'CHIGUA_API_KEY': ''}
     with tempfile.TemporaryDirectory(prefix='chigua-resume-check-') as temp:
         isolated = Path(temp)
@@ -40,9 +44,17 @@ def verify(run_id, recover_raw=False):
         shutil.copytree(original, target)
         core.write_json(isolated / 'cases' / (case['id'] + '.json'), case)
         (isolated / 'uploads').mkdir()
-        for name in {m['image'] for m in case['messages'] if m.get('image')}:
+        cases = [case]
+        for dependency in dependencies:
+            assert dependency.isalnum()
+            source = original.parent/dependency
+            shutil.copytree(source,isolated/'runs'/dependency)
+            cases.append(json.loads((source/'input.json').read_text()))
+        for name in {m['image'] for item in cases for m in item['messages'] if m.get('image')}:
             assert Path(name).name == name
-            shutil.copyfile(core.DATA / 'uploads' / name, isolated / 'uploads' / name)
+            source = core.DATA/'uploads'/name
+            if source.is_file():
+                shutil.copyfile(source,isolated/'uploads'/name)
         # Simulate a restart before final publication, with only durable data.
         (target / 'result.json').unlink()
         job = json.loads((target / 'job.json').read_text())
@@ -72,7 +84,13 @@ def verify(run_id, recover_raw=False):
             model.assert_not_called()
             network.assert_not_called()
             assert resumed['usage'] == original_usage
-            assert resumed['result']['report'] == result['report']
+            if export_html is None:
+                assert resumed['result']['report'] == result['report']
+            else:
+                html = report.report_html(case,resumed['result'])
+                fd = os.open(export_html,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+                with os.fdopen(fd,'w',encoding='utf-8') as file:
+                    file.write(html)
             assert all(row['cached'] for row in resumed['result']['trace'] + resumed['result']['editorial_trace'])
             if recovered_attempt:
                 assert json.loads(recovered_attempt.read_text())['recovered_response'] is True
@@ -88,5 +106,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('run_id')
     parser.add_argument('--recover-raw', action='store_true')
+    parser.add_argument('--export-html',type=Path,help='Save the automatically replayed report using current local checks')
     args = parser.parse_args()
-    print(json.dumps(verify(args.run_id, args.recover_raw), ensure_ascii=False))
+    print(json.dumps(verify(args.run_id, args.recover_raw, args.export_html), ensure_ascii=False))

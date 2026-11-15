@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from . import event_sequence, evidence_first, provider
 from .core import ROOT, STR, STRS, PUBLISHED_SCHEMA, ASSESSMENT_READER_SCHEMA, TIMED_READER_SCHEMA, TIMED_ARC_STEP, schema_obj, validate_schema, validate_report, write_json, now
-from .checkpoints import CallFailure,digest
+from .checkpoints import CallFailure,digest,media_hashes
 from .editor import normalize_presentations
 
 VERSION='compact-v17'
@@ -819,11 +819,134 @@ def revision_audit_task(pack, candidate, previous):
             '\n相关材料：'+dump(pack)+'\n先前问题：'+dump(previous)+'\n修改后的字段：'+dump(changes))
 
 
+def saved_binding(folder):
+    """Load only a durable, completed prefix of a recorded binding response."""
+    for path in sorted((folder/'.calls').glob('*/attempt-*/attempt.json')):
+        attempt = json.loads(path.read_text())
+        if attempt.get('stage') != 'bind_sources' or attempt.get('kind') != 'output_length':
+            continue
+        response = path.with_name('raw-response.json')
+        if not response.is_file():
+            continue
+        choice = json.loads(response.read_text())['choices'][0]
+        if choice.get('finish_reason') == 'length':
+            recovered = evidence_first.recover_binding_prefix(choice['message']['content'])
+            if recovered:
+                return recovered
+    raise ValueError('原任务没有可用的截断证据响应。')
+
+
+RECOVERY_RULES = (
+    '你在复核一次截断的证据提取，只处理下面列出的重点材料。旧候选可能错，不能当原文。'
+    '输出复核后的完整主线，保留原来有据的前因和两方争议；'
+    '以源摘录为准，按前情、导火索、公开发声、要求撤回后的回敬、后续解释等事件的材料顺序排列。'
+    '区分同一条后来发言回述了哪些动作；公开发声和事后再贴图不能互相替代。'
+    '反问「为什么让我」与回敬要求别人是不同动作。截图只引一句关键原话，不跨说话人。'
+    '没有图内说话人标注时，不用转发者的名字；只能标该截图里的回应者，或留下未知。'
+    '两段私聊相对时间缺证时留空，basis 和 limits 说明知道哪段内的先后、哪些跨场景排不出。'
+    '至少检查参赛期间已有分工／交付／决策摩擦，以及分钱主张；争议数字写清谁从何时算到何时。'
+    '最多 8 个核心事件、2 个争议，每个争议保留两方。短引文、短说明。先 roles 和 disputes，再 events 和 limits。'
+)
+
+
+def recovery_context(pack, saved, focus):
+    approved = set(focus)
+    # Limit the resumed request to selected original units. The full extraction
+    # has already been paid for, and its recovered alternatives are just leads.
+    candidates = [
+        {key:event[key] for key in ('kind','label','source')}
+        for event in saved['events'] if event['source']['source_id'] in approved
+    ]
+    messages = [{key:row[key] for key in ('id','speaker','speaker_label','text','image_observation_ref') if key in row}
+                for row in pack['messages'] if row['id'] in approved]
+    image_ids = {row.get('image_observation_ref') for row in messages}
+    images = [row for row in pack['image_observations'] if row['source_id'] in image_ids]
+    return {'question':pack['question'],'旧角色建议':saved['roles'],'旧事件建议':candidates,
+            '重点原文':messages,'已缓存截图读图':images}
+
+
+def recovery_reviews(folder):
+    results = []
+    for name in ('review_binding','review_binding_repair'):
+        path = folder/(name+'.output.json')
+        if path.is_file():
+            result = json.loads(path.read_text())
+            validate_schema(result,evidence_first.LEDGER_SCHEMA)
+            results.append(result)
+    return results
+
+
+def recover_image_context(pack, case, folder):
+    """Use a prior description only for identical image bytes, never its wrapper."""
+    previous_case = json.loads((folder/'input.json').read_text())
+    previous_pack = json.loads((folder/'editorial/evidence-pack.json').read_text())
+    _, _, current_assets = prepare(case)
+    _, _, earlier_assets = prepare(previous_case)
+    earlier_images = {item['source_id']:item for item in previous_pack['image_observations']}
+    hashes = {}
+    for file, sid in earlier_assets.items():
+        item = earlier_images.get(sid)
+        if not item or evidence_first.scene_for(item['description'])=='未知':
+            continue
+        try:
+            sha = media_hashes([file],folder.parent.parent)[0]['sha256']
+        except ValueError:
+            continue
+        hashes[sha] = item['description']
+    files = {sid:file for file,sid in current_assets.items()}
+    for item in pack['image_observations']:
+        if evidence_first.scene_for(item['description'])!='未知':
+            continue
+        sha = media_hashes([files[item['source_id']]],folder.parent.parent)[0]['sha256']
+        if sha in hashes:
+            item['alternate_description'] = hashes[sha]
+
+
+def select_recovery_binding(value, earlier, targets, pack):
+    """Keep usable entries from each response without retrying the whole batch."""
+    events, limits = [], list(value['limits'])
+    used = set()
+    roles = list({r['speaker']:r for prior in [*reversed(earlier),value] for r in prior['roles']}.values())
+    for kind in evidence_first.KIND_PHASE:
+        sources = targets.get(kind, [])
+        if not sources:
+            continue
+        matched = False
+        for source in sources:
+            options = [item for prior in [value,*earlier] for item in prior['events']
+                       if item['kind']==kind and item['source']['source_id']==source]
+            best, score = None, -1
+            for option in options:
+                key = (source,option['source']['medium'],option['source']['quote'].strip())
+                if key in used:
+                    continue
+                checked = evidence_first.build({'events':[option],'roles':roles,'disputes':[],'limits':[]},
+                                               pack,verify_turns=True)['events']
+                if checked and (len(checked[0]['excerpt'])<=180 or kind=='前情'):
+                    candidate = checked[0]
+                    rank = (8*int(candidate['bound']) + 4*int(bool(candidate['time']))
+                            + 2*int(candidate['scene']!='未知') + int('\n' not in candidate['excerpt']))
+                    if rank>score:
+                        best, score = option, rank
+            if best:
+                events.append(best)
+                used.add((source,best['source']['medium'],best['source']['quote'].strip()))
+                matched = True
+        if not matched:
+            limits.append(f'「{kind}」暂无能与原文对应的动作。')
+    return {**value,'roles':roles,'events':events,'limits':list(dict.fromkeys(limits))}
+
+
 def execute_evidence_first(case, folder, pack, ids, trace, checked_call, version):
     from .report import reader_html
 
+    manifest = folder.parent/'manifest.json'
+    policy = json.loads(manifest.read_text()) if manifest.is_file() else {}
+    recovery = policy.get('binding_recovery') if version==VERSION else None
+    verify_turns = version == VERSION
+
     def bind(value):
-        ledger = evidence_first.build(value, pack)
+        ledger = evidence_first.build(value, pack, verify_turns=verify_turns)
         if not ledger['events']:
             raise ValueError('没有任何事件能定位到输入原文。')
         return value
@@ -835,10 +958,56 @@ def execute_evidence_first(case, folder, pack, ids, trace, checked_call, version
                  '逐字引文尽可能短（通常 15–60 字），每个说明只写一句。先返回角色 roles 及关键争议 disputes，再返回事件 events。')
         fields = binding_schema['properties']
         binding_schema = schema_obj({key:fields[key] for key in ('roles','disputes','events','limits')})
-    binding = checked_call('bind_sources',task+'\n材料：'+dump(pack),
-                           binding_schema,bind,tokens=3400,
-                           recover_prefix=version==VERSION)
-    ledger = evidence_first.build(binding,pack)
+    if recovery:
+        runs = folder.parent.parent
+        previous = saved_binding(runs/recovery['run']/'editorial')
+        reviews = recovery_reviews(runs/recovery['review_from']/'editorial') if recovery.get('review_from') else []
+        if recovery.get('visual_from'):
+            recover_image_context(pack,case,runs/recovery['visual_from'])
+        context = recovery_context(pack,previous,recovery['focus'])
+        targets = recovery.get('targets')
+        instructions = RECOVERY_RULES
+        if targets:
+            context['逐项复核范围'] = targets
+            context['已返回候选'] = {kind:list(dict.fromkeys(
+                item['source']['source_id'] for prior in [*reviews,previous] for item in prior['events']
+                if item['kind']==kind and item['source']['source_id'] in sources))
+                for kind,sources in targets.items()}
+            instructions += ('\n按逐项范围分别核对，只从该类别列出的编号中选原句。已有建议会另行独立核对，可集中补上建议缺失或不对题的节点。'
+                             '可以针对不同来源各写一条前情，优先核对分工、交付和实际决策，区分自己主张和批评别人的说法。'
+                             '引用截图时 source quote 必须是该动作实际发言，不能用另一句来代表；'
+                             '图内时间抄在该发言之前最近的聊天时间，屏幕顶部设备时钟不算。'
+                             '同一说话人能看出在回述他自己的行为时，actual_actor 用他的 P 号。'
+                             '事后解释只选对方对原先行为的解释或改口原句，例如把行为解释成玩笑；反问和批评不属于这个节点。'
+                             '原句没有名字时把 actual_actor 留空；场景可以由同一图的读图描述确认。')
+
+        def review(value):
+            if targets:
+                value = select_recovery_binding(value,[*reviews,previous],targets,pack)
+            else:
+                value = {**value,'events':[item for item in value['events']
+                           if item['source']['source_id'] in recovery['focus']]}
+            return bind(value)
+
+        try:
+            binding = checked_call('review_binding',instructions+'\n'+task+'\n'+dump(context),
+                                   binding_schema,review,tokens=3400,recover_prefix=True)
+        except CallFailure as exc:
+            if exc.kind not in {'structure','budget'}:
+                raise
+            binding = review({'events':[],'roles':[],'disputes':[],'limits':['局部复核未完整返回，已保留可核对的节点。']})
+        # A correction can only replace checked disputes; retain the complete
+        # alternatives recovered from the earlier answer.
+        existing = {frozenset(a['source']['source_id'] for a in d['accounts'])
+                    for d in binding['disputes']}
+        replaced = [d for d in previous['disputes']
+                    if not any(len({a['source']['source_id'] for a in d['accounts']} & ids)>=2 for ids in existing)]
+        binding = {**binding,'disputes':binding['disputes']+replaced,
+                   'limits':binding['limits']+previous['limits']}
+    else:
+        binding = checked_call('bind_sources',task+'\n材料：'+dump(pack),
+                               binding_schema,bind,tokens=3400,recover_prefix=version==VERSION)
+    ledger = evidence_first.build(binding,pack,verify_turns=verify_turns)
     write_json(folder/'bound-evidence.json',ledger)
     # The writer sees reviewed extracts, not all the wrappers and OCR blocks.
     context = {'question':pack['question'],'scope':pack['scope'],'evidence':ledger}

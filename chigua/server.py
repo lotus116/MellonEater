@@ -258,7 +258,12 @@ class Handler(BaseHTTPRequestHandler):
                 case=pipeline.load_case(safe_id(obj['case_id']))
                 if obj.get('identity'):
                     case['identity']=str(obj['identity'])[:200]
-                return self.send(pipeline.start(case,obj.get('method','B1'),force=obj.get('force') is True,max_requests=obj.get('max_requests',20),max_total_tokens=obj.get('max_total_tokens',60000),reuse_vision_from=obj.get('reuse_vision_from')),202)
+                return self.send(pipeline.start(
+                    case,obj.get('method','B1'),force=obj.get('force') is True,
+                    max_requests=obj.get('max_requests',20),max_total_tokens=obj.get('max_total_tokens',pipeline.DEFAULT_TOKEN_LIMIT),
+                    reuse_vision_from=obj.get('reuse_vision_from'),recover_binding_from=obj.get('recover_binding_from'),
+                    recovery_focus=obj.get('recovery_focus'),recovery_targets=obj.get('recovery_targets'),
+                    recovery_review_from=obj.get('recovery_review_from'),recovery_visual_from=obj.get('recovery_visual_from')),202)
             if path=='/api/maintenance/reload':
                 return self.send(reload_worker())
             if path=='/api/evaluations/false-completion':

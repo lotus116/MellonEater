@@ -5,7 +5,7 @@ import os
 import uuid
 from pathlib import Path
 from .core import DATA, fingerprint, normalize_messages, now, parse_import
-from .pipeline import JOBS, load_case, save_case, run_pipeline, list_runs, start, resume
+from .pipeline import DEFAULT_TOKEN_LIMIT, JOBS, load_case, save_case, run_pipeline, list_runs, start, resume
 from .report import report_html, report_pdf
 
 
@@ -27,7 +27,7 @@ def main():
     run=sub.add_parser('analyze');run.add_argument('case_id');run.add_argument('--method',choices=['B0','B1','B2','A1'],default='B1')
     run.add_argument('--provider',choices=['codex','deepseek','api']);run.add_argument('--model');run.add_argument('--identity')
     run.add_argument('--force',action='store_true');run.add_argument('--max-requests',type=int,default=20)
-    run.add_argument('--max-total-tokens',type=int,default=60000)
+    run.add_argument('--max-total-tokens',type=int,default=DEFAULT_TOKEN_LIMIT)
     cont=sub.add_parser('resume');cont.add_argument('run_id');cont.add_argument('--allow-uncertain',action='store_true');cont.add_argument('--max-requests',type=int)
     cont.add_argument('--max-total-tokens',type=int);cont.add_argument('--local-only',action='store_true')
     exp=sub.add_parser('export');exp.add_argument('case_id');exp.add_argument('--format',choices=['html','pdf'],default='html');exp.add_argument('--output',type=Path,required=True)

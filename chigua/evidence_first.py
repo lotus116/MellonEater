@@ -15,6 +15,7 @@ SCENE_PATTERN = {
     '群聊':r'群聊|群组|微信群|群“|群「|群(?:[】）]|[，：:,]|里|内|中|$)|退出的群聊',
     '私聊':r'私聊|私信|私发|单聊|一对一',
 }
+IMAGE_DATE_CLOCK = re.compile(r'(?:\d{4}年)?\d{1,2}月\d{1,2}[日号]\s+\d{1,2}[:：]\d{2}\s*[AP]M',re.I)
 SOURCE = schema_obj({'source_id':STR, 'medium':{'type':'string','enum':['text','image']}, 'quote':STR})
 LEDGER_SCHEMA = schema_obj({
     'roles':{'type':'array','items':schema_obj({'speaker':STR,'role':STR})},
@@ -57,6 +58,8 @@ WRITE_RULES = (
 def scene_for(text):
     # Recaps can mention the old room and the destination room. Preserve
     # uncertainty unless the model isolates a clause naming the relevant room.
+    if re.match(r'^私聊(?:界面|续页|窗口|对话|截图)',text):
+        return '私聊'
     hits = [kind for kind in ('小群','公开群','私聊') if re.search(SCENE_PATTERN[kind],text)]
     if len(hits) > 1:
         return '未知'
@@ -71,6 +74,12 @@ def public_role(value):
     return value if re.fullmatch(r'(?:'+anchors+r')[甲乙丙丁戊己1-9]?',value) else ''
 
 
+def asserted_team_header(text, label):
+    header = text.splitlines()[1:3]
+    return bool(label and re.search(r'小组|小队|\bteam\b',label,re.I)
+                and any(line.strip().lstrip('< ').rstrip(' .…')==label for line in header))
+
+
 def replace_speaker_codes(value, roles):
     if isinstance(value, str):
         return re.sub(r'(?<![A-Za-z0-9])P[0-9]+(?![A-Za-z0-9])',
@@ -83,27 +92,42 @@ def replace_speaker_codes(value, roles):
     return value
 
 
-def build(ledger, pack, *, legacy_context=False):
+def build(ledger, pack, *, legacy_context=False, verify_turns=False):
     validate_schema(ledger, LEDGER_SCHEMA)
     rows = {m['id']:m for m in pack['messages']}
     images = {m['source_id']:m for m in pack.get('image_observations', [])}
     speakers = list(dict.fromkeys(row['speaker'] for row in rows.values()))
     requested_roles = {r['speaker']:public_role(r['role']) for r in ledger['roles']}
+    if verify_turns:
+        for row in ledger['roles']:
+            role = re.sub(r'^[^，；（）]*(队长|组长|队员|组员|负责人|旁观者)(?=[（(，；\s]|$)',r'\1',row['role'].strip())
+            role = re.split(r'[（(，；]',role,1)[0]
+            requested_roles[row['speaker']] = public_role(role)
     roles = {}
     used_roles = set()
     for index, speaker in enumerate(speakers, 1):
         role = requested_roles.get(speaker)
+        if verify_turns and role and role in used_roles:
+            role = f'{role}{index}'
         if not role or role in used_roles:
             role = f'参与者{index}'
         roles[speaker]=role
         used_roles.add(role)
 
+    ordered_messages = list(rows)
+    previous = dict(zip(ordered_messages[1:],ordered_messages))
     def quoted_actor(item, row, quote, before):
         literal = item['actor_quote'].strip().rstrip('：:').strip()
         claimed = item['actual_actor']
         if item['mode']=='后来回述' and claimed==row['speaker'] and (
                 (literal=='我' and '我' in quote) or re.search(r'我.{0,5}(?:回|贴|转发|发|说|给|去|采取|让)',quote)):
             return roles[claimed]
+        if verify_turns and item['mode']=='后来回述' and claimed==row['speaker']:
+            prior = rows.get(previous.get(row['id']),{})
+            same_voice = prior.get('speaker')==claimed and bool(re.search(r'我.{0,30}(?:看到|听到|说|觉得|就)',prior['text']))
+            if re.search(r'我(?:定的|负责|同意|不同意|上头|称|自己)|^我|(?:由|是)我',quote) or (
+                    same_voice and re.match(r'所以(?:我)?(?:就)?(?:采取|去|先|发|说|在)',quote)):
+                return roles[claimed]
         if not literal:
             return ''
         nearby = bool(re.search(r'(?:^|[\n【\s])'+re.escape(literal)+r'\s*[:：]?\s*$',before))
@@ -166,12 +190,16 @@ def build(ledger, pack, *, legacy_context=False):
                 scene = '私聊'
             else:
                 scene = scene_for(description)
+            if verify_turns and scene=='未知':
+                scene = scene_for(image.get('alternate_description',''))
             # A message notification can name a group over a private pane;
             # the independently described pane outranks selectable OCR text.
             if scene == '未知' and '无法在已退出的群聊中发送消息' in content:
                 scene = '群聊'
             if scene == '未知' and proposed_scene and proposed_scene in before:
                 scene = scene_for(proposed_scene)
+            if verify_turns and scene=='群聊' and asserted_team_header(content,proposed_scene):
+                scene = '小群'
         else:
             context = f'{before}{anchor["quote"]}'
             scene_context = proposed_scene
@@ -210,9 +238,10 @@ def build(ledger, pack, *, legacy_context=False):
             attribution = '，'.join([attribution,scene])
         actor_label = actor if actor!='说话者待确认' else '发言者待确认'
         prefix = f'{attribution} · {actor_label}'
-        if (item['kind']=='回击' and re.search(r'为什么.{0,15}(?:让|叫|要)我|我凭什么',anchor['quote'])
+        if (item['kind']=='回击' or (verify_turns and item['kind']=='事后解释')) and (
+                re.search(r'为什么.{0,15}(?:让|叫|要)我|我凭什么',anchor['quote'])
                 and not re.search(r'我.{0,4}(?:回|发|说|让).{0,12}(?:要你|你也|让她|让他)',anchor['quote'])):
-            findings.append('有一条拟作回击的引文只显示反问，未作为回击写入。')
+            findings.append(f'有一条拟作{item["kind"]}的引文只显示反问，已移出该节点。')
             continue
         order_basis = item['order_basis']
         if order_basis not in {'时间戳可确认','相对顺序可确认','当事人回述','先后未确认'}:
@@ -221,6 +250,21 @@ def build(ledger, pack, *, legacy_context=False):
                 'stage':item['label'],'source_ids':[anchor['source_id']],'order_basis':order_basis,
                 'source_check':{'actor':actor,'scene':scene,'basis':item['basis'] or attribution,'mode':item['mode'],
                                 'anchor':anchor,'time_origin':item['time_origin'],'time_quote':item['time_quote']}}
+        if verify_turns and anchor['from']=='image' and mode=='当时记录':
+            # Recompute from the exact utterance offset, not from the
+            # requested timestamp, which may belong to the next turn.
+            prefix_lines = content.partition(anchor['quote'])[0].strip().splitlines()[1:]
+            clocks = [line.strip() for line in prefix_lines
+                      if event_sequence.TIME_WORDS.fullmatch(line.strip())]
+            if clocks:
+                step['source_check']['time_origin'] = '图内时间'
+                step['source_check']['time_quote'] = clocks[-1]
+            else:
+                step['source_check'].update(time_origin='未知',time_quote='')
+                step['order_basis'] = '先后未确认'
+        if verify_turns and mode=='后来回述' and item['time_origin']=='消息时间':
+            step['source_check'].update(time_origin='未知',time_quote='')
+            step['order_basis'] = '当事人回述'
         label, day, valid_time = event_sequence.event_time(step,rows,images)
         relative_words = {'当天','当晚','次日','隔天','次晚'}
         if mode=='后来回述' and item['time_origin']=='原文所述时间':
@@ -239,8 +283,15 @@ def build(ledger, pack, *, legacy_context=False):
         # importing the model's actor/scene paraphrase.
         uncertain = (actor=='说话者待确认' or (scene_conflict and (legacy_context or asserted_scene != '群聊')) or
                      (direct and item['actual_actor'] and item['actual_actor']!=row['speaker']))
+        fallback_action = '此处可核对引文，动作归属仍待确认。'
+        if verify_turns and uncertain and len(anchor['quote'])<=100 and '\n' not in anchor['quote']:
+            quote = role_words(anchor['quote'])
+            if anchor['from']=='image':
+                fallback_action = f'截图中出现「{quote}」。发言归属需对照原图。'
+            elif mode=='后来回述':
+                fallback_action = f'{roles[row["speaker"]]}回述：「{quote}」。'
         events.append({'kind':item['kind'],'title':role_words(item['label']) if not uncertain else item['kind']+'（归属待确认）',
-                       'action':role_words(item['action']) if not uncertain else '此处可核对引文，动作归属仍待确认。',
+                       'action':role_words(item['action']) if not uncertain else fallback_action,
                        'actor':actor,'scene':scene,'attribution':prefix,'source_ids':[anchor['source_id']],
                        'excerpt':anchor['quote'],'impact':role_words(item['impact']) if not uncertain else '',
                        'time':label,'order_basis':order_basis,'basis':item['basis'] if not uncertain else '',
@@ -337,11 +388,43 @@ def ledger_prose(ledger):
 def publication_ledger(ledger, pack):
     """Refine display fields using the very same scoped quote as the binding."""
     messages = {row['id']:row for row in pack['messages']}
+    previous = {row['id']:prior for prior,row in zip(pack['messages'],pack['messages'][1:])}
+    images = {image['source_id']:image for image in pack.get('image_observations',[])}
     for item in ledger['events']:
         source = messages[item['source_ids'][0]]
-        if source.get('image_observation_ref') or not item['attribution'].startswith('据'):
+        image = images.get(source.get('image_observation_ref'))
+        if image:
+            excerpt = item['excerpt']
+            before, found, _ = image['visible_text'].partition(excerpt)
+            if not item['time'] and found and image['visible_text'].count(excerpt)==1:
+                # Some iOS screenshots use a localized date with a 12-hour
+                # clock. The complete label is needed to compare it with OCR.
+                clocks = [line.strip() for line in before.strip().splitlines()[1:]
+                          if event_sequence.TIME_WORDS.fullmatch(line.strip())
+                          or IMAGE_DATE_CLOCK.fullmatch(line.strip())]
+                if clocks and IMAGE_DATE_CLOCK.fullmatch(clocks[-1]) and clocks[-1] in image['visible_time']:
+                    item['time'] = f'{clocks[-1]}（图内）'
+            if item['time'] and item['order_basis']=='先后未确认':
+                item['order_basis'] = '时间戳可确认'
+            if (item['kind']=='事后解释' and item['scene']=='私聊' and found and image['visible_text'].count(excerpt)==1
+                    and len(excerpt)<=50 and re.search(r'开(?:个)?玩笑|只是.{0,4}玩笑',excerpt)
+                    and re.search(r'(?:为什么|凭什么).{0,20}(?:让|要|叫|给)我|我凭什么[^。？！\n]{0,20}[？?]',before[-200:])):
+                item['title'] = '私聊被质问后，出现玩笑解释'
+                item['action'] = f'同一段私聊里，先有质问，随后出现「{excerpt}」。'
+                item['order_basis'] = '相对顺序可确认'
+                item['impact'] = '可确认截图内质问在前、解释在后。与另一段回击的先后仍待确认。'
+            continue
+        if not item['attribution'].startswith('据'):
             continue
         text = item['excerpt']
+        if item['kind']=='公开披露' and item.get('bound') and text.startswith('所以'):
+            prior = previous.get(source['id'],{})
+            if (prior.get('speaker')==source['speaker'] and prior.get('parent_id')==source.get('parent_id')
+                    and prior.get('source_root')==source.get('source_root')
+                    and re.search(r'我.{0,36}(?:看到|听到|收到).{0,36}(?:后|我就)',prior['text'])):
+                item['source_ids'].append(prior['id'])
+        if item.get('bound') is False and item['scene']=='未知' and item['actor']!='说话者待确认':
+            item['title'] = item['kind']+'（场景待确认）'
         if item['scene']=='未知':
             heading = re.match(r'^【([^】]+)】',text)
             if heading:

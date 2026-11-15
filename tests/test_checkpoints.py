@@ -57,6 +57,15 @@ class CheckpointTests(unittest.TestCase):
             _, stats = provider.generate('read image',None,current,'vision_0',['sample.png'])
             self.assertNotIn('reused_from',stats)
             self.assertEqual(gen.call_count,3)
+    def test_binding_recovery_stops_before_redispatching_an_uncached_image(self):
+        uploads = self.root/'uploads'
+        uploads.mkdir()
+        (uploads/'new.png').write_bytes(b'new image')
+        core.write_json(self.folder/'manifest.json',{'binding_recovery':{'run':'prior'},'reuse_vision_from':'prior'})
+        with patch.object(provider,'_generate_once') as model:
+            with self.assertRaisesRegex(CallFailure,'未重新发送图片'):
+                provider.generate('read',None,self.folder/'editorial','vision_0',['new.png'])
+            model.assert_not_called()
     def test_429_retries_bounded_and_records_every_attempt(self):
         with patch.object(provider,'_generate_once',side_effect=[CallFailure('limited',kind='429',retryable=True),({},STATS)]) as gen,patch('chigua.checkpoints.time.sleep') as sleep:
             self.generate();self.assertEqual(gen.call_count,2);sleep.assert_called_once()

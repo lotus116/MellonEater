@@ -102,6 +102,8 @@ def _call_locked(prompt,schema,folder,stage,images,config,media,execute,recover=
                 raise CallFailure('旧读图缓存校验失败。',kind='cache') from exc
             write_json(cache,{**saved,'stats':stats})
             return saved['value'],stats
+    if policy.get('binding_recovery') and stage.startswith('vision_'):
+        raise CallFailure('恢复所需的读图缓存未命中，未重新发送图片。',kind='cache')
     limit=policy.get('max_requests',20)
     attempts=sorted(cache_dir.glob('attempt-*/attempt.json'))
     # A request interrupted after dispatch might already have been billed.
